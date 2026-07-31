@@ -1,0 +1,8 @@
+# Daml build output / compiler cache (dpm build / dpm test).
+# The compiled DAR lands in .daml/dist/ and is regenerated from daml/
+# sources. The vendored DARs under dars/ are NOT build output -- they are
+# committed binaries with their own provenance (see dars/README.md).
+**/.daml/
+
+# Task-planning notes for AI coding agents; never part of the committed docs.
+.claude/

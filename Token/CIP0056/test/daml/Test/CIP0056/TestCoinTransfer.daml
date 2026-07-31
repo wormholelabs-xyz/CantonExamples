@@ -1,0 +1,306 @@
+-- | Tests for the 'TIV1.TransferFactory' v1 'Coin' transfer paths
+-- (CIP-0056), independent of any burn/mint bridge flow.
+module Test.CIP0056.TestCoinTransfer where
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Optional (fromSome)
+import DA.TextMap qualified as TextMap
+import DA.Time (hours, addRelTime)
+
+import Splice.Api.Token.HoldingV1 (InstrumentId(..), Holding)
+import Splice.Api.Token.MetadataV1 (AnyValue(..), ChoiceContext(..), ExtraArgs(..), emptyMetadata)
+import Splice.Api.Token.TransferInstructionV1 qualified as TIV1
+import Token.CIP0056.Coin
+import Token.CIP0056.CoinTransfer
+import Token.CIP0056.CoinFactory
+import Test.CIP0056.TestUtils (coinFactorySetup, mintCoin, emptyExtraArgs, expectAbort)
+
+asTransferFactoryV1 : ContractId CoinFactory -> ContractId TIV1.TransferFactory
+asTransferFactoryV1 = toInterfaceContractId @TIV1.TransferFactory
+
+-- | Build a v1 'TIV1.Transfer' with a 24h execution window from @requestedAt@.
+mkTransferV1 : Time -> Party -> Party -> Decimal -> InstrumentId -> [ContractId Holding] -> TIV1.Transfer
+mkTransferV1 requestedAt sender receiver amount instrumentId inputHoldingCids =
+  TIV1.Transfer with
+    sender, receiver, amount, instrumentId, requestedAt
+    executeBefore = requestedAt `addRelTime` hours 24
+    inputHoldingCids
+    meta = emptyMetadata
+
+extraArgsWithPreapproval : ContractId TransferPreapproval -> ExtraArgs
+extraArgsWithPreapproval cid = ExtraArgs with
+  context = ChoiceContext with
+    values = TextMap.fromList [(transferPreapprovalContextKey, AV_ContractId (coerceContractId cid))]
+  meta = emptyMetadata
+
+-- | 'CoinFactory' is @signatory admin@ alone; disclose it so a non-admin
+-- submitter has visibility to exercise a choice on it.
+discloseFactory : Party -> ContractId CoinFactory -> Script Disclosure
+discloseFactory admin factoryCid = fromSome <$> queryDisclosure admin factoryCid
+
+----------------------------------------------------------------------
+-- Transfer v1 -- self-send, preapproval, pending/accept/reject/withdraw
+----------------------------------------------------------------------
+
+testCoinTransferSelfSendV1 : Script ()
+testCoinTransferSelfSendV1 = do
+  admin <- allocateParty "TransferSelfV1Admin"
+  alice <- allocateParty "TransferSelfV1Alice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-SELF-V1"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- submit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice alice 0.004 instrumentId [coinCid]
+      extraArgs = emptyExtraArgs
+  case res.output of
+    TIV1.TransferInstructionResult_Completed{receiverHoldingCids = [rcid]} -> do
+      Some r <- queryContractId admin (coerceContractId @Holding @Coin rcid)
+      r.amount === 0.004
+    other -> abort ("expected Completed with one receiver coin, got: " <> show other)
+  case res.senderChangeCids of
+    [changeCid] -> do
+      Some c <- queryContractId admin (coerceContractId @Holding @Coin changeCid)
+      c.amount === 0.006
+    other -> abort ("expected one change coin, got: " <> show other)
+
+testCoinTransferWithPreapprovalCompletesSynchronouslyV1 : Script ()
+testCoinTransferWithPreapprovalCompletesSynchronouslyV1 = do
+  admin <- allocateParty "TransferPreapprovedV1Admin"
+  alice <- allocateParty "TransferPreapprovedV1Alice"
+  bob <- allocateParty "TransferPreapprovedV1Bob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-PREAPPROVED-V1"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  preCid <- submit bob do createCmd TransferPreapproval with owner = bob, instrumentId
+  factoryDisc <- discloseFactory admin factoryCid
+  preDisc <- fromSome <$> queryDisclosure bob preCid
+  t0 <- getTime
+  res <- submit (actAs alice <> disclose factoryDisc <> disclose preDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice bob 0.006 instrumentId [coinCid]
+      extraArgs = extraArgsWithPreapproval preCid
+  case res.output of
+    TIV1.TransferInstructionResult_Completed{receiverHoldingCids = [rcid]} -> do
+      Some r <- queryContractId admin (coerceContractId @Holding @Coin rcid)
+      r.owner === bob
+      r.amount === 0.006
+    other -> abort ("expected Completed, got: " <> show other)
+  case res.senderChangeCids of
+    [changeCid] -> do
+      Some c <- queryContractId admin (coerceContractId @Holding @Coin changeCid)
+      c.owner === alice
+      c.amount === 0.004
+    other -> abort ("expected one sender change coin, got: " <> show other)
+
+testCoinTransferWithoutPreapprovalIsPendingV1 : Script ()
+testCoinTransferWithoutPreapprovalIsPendingV1 = do
+  admin <- allocateParty "TransferPendingV1Admin"
+  alice <- allocateParty "TransferPendingV1Alice"
+  bob <- allocateParty "TransferPendingV1Bob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-PENDING-V1"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- submit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice bob 0.006 instrumentId [coinCid]
+      extraArgs = emptyExtraArgs
+  case res.output of
+    TIV1.TransferInstructionResult_Pending{transferInstructionCid} -> do
+      Some instr <- queryContractId admin (coerceContractId @TIV1.TransferInstruction @CoinTransferInstruction transferInstructionCid)
+      instr.sender === alice
+      instr.receiver === bob
+      instr.amount === 0.006
+    other -> abort ("expected Pending, got: " <> show other)
+
+-- | End-to-end continuation of the pending case: accept completes it.
+testCoinTransferAcceptCompletesPendingV1 : Script ()
+testCoinTransferAcceptCompletesPendingV1 = do
+  admin <- allocateParty "TransferAcceptV1Admin"
+  alice <- allocateParty "TransferAcceptV1Alice"
+  bob <- allocateParty "TransferAcceptV1Bob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-ACCEPT-V1"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- submit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice bob 0.006 instrumentId [coinCid]
+      extraArgs = emptyExtraArgs
+  let TIV1.TransferInstructionResult_Pending{transferInstructionCid} = res.output
+      instrCid = coerceContractId @TIV1.TransferInstruction @CoinTransferInstruction transferInstructionCid
+
+  submitMustFail alice do exerciseCmd transferInstructionCid TIV1.TransferInstruction_Accept with extraArgs = emptyExtraArgs
+  acceptRes <- submit bob do
+    exerciseCmd transferInstructionCid TIV1.TransferInstruction_Accept with extraArgs = emptyExtraArgs
+  case acceptRes.output of
+    TIV1.TransferInstructionResult_Completed{receiverHoldingCids = [rcid]} -> do
+      Some r <- queryContractId admin (coerceContractId @Holding @Coin rcid)
+      r.owner === bob
+      r.amount === 0.006
+    other -> abort ("expected Completed, got: " <> show other)
+  archived <- queryContractId admin instrCid
+  archived === None
+
+testCoinTransferRejectReturnsFundsToSenderV1 : Script ()
+testCoinTransferRejectReturnsFundsToSenderV1 = do
+  admin <- allocateParty "TransferRejectV1Admin"
+  alice <- allocateParty "TransferRejectV1Alice"
+  bob <- allocateParty "TransferRejectV1Bob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-REJECT-V1"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- submit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice bob 0.01 instrumentId [coinCid]
+      extraArgs = emptyExtraArgs
+  let TIV1.TransferInstructionResult_Pending{transferInstructionCid} = res.output
+
+  submitMustFail alice do exerciseCmd transferInstructionCid TIV1.TransferInstruction_Reject with extraArgs = emptyExtraArgs
+  rejectRes <- submit bob do
+    exerciseCmd transferInstructionCid TIV1.TransferInstruction_Reject with extraArgs = emptyExtraArgs
+  case rejectRes.output of
+    TIV1.TransferInstructionResult_Failed -> pure ()
+    other -> abort ("expected Failed, got: " <> show other)
+  case rejectRes.senderChangeCids of
+    [cid] -> do
+      Some c <- queryContractId admin (coerceContractId @Holding @Coin cid)
+      c.owner === alice
+      c.amount === 0.01
+    other -> abort ("expected one returned coin, got: " <> show other)
+
+testCoinTransferWithdrawBySenderReturnsFundsV1 : Script ()
+testCoinTransferWithdrawBySenderReturnsFundsV1 = do
+  admin <- allocateParty "TransferWithdrawV1Admin"
+  alice <- allocateParty "TransferWithdrawV1Alice"
+  bob <- allocateParty "TransferWithdrawV1Bob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-WITHDRAW-V1"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- submit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice bob 0.01 instrumentId [coinCid]
+      extraArgs = emptyExtraArgs
+  let TIV1.TransferInstructionResult_Pending{transferInstructionCid} = res.output
+
+  submitMustFail bob do exerciseCmd transferInstructionCid TIV1.TransferInstruction_Withdraw with extraArgs = emptyExtraArgs
+  withdrawRes <- submit alice do
+    exerciseCmd transferInstructionCid TIV1.TransferInstruction_Withdraw with extraArgs = emptyExtraArgs
+  case withdrawRes.senderChangeCids of
+    [cid] -> do
+      Some c <- queryContractId admin (coerceContractId @Holding @Coin cid)
+      c.owner === alice
+    other -> abort ("expected one returned coin, got: " <> show other)
+
+testCoinTransferRejectsMismatchedPreapprovalV1 : Script ()
+testCoinTransferRejectsMismatchedPreapprovalV1 = do
+  admin <- allocateParty "TransferMismatchV1Admin"
+  alice <- allocateParty "TransferMismatchV1Alice"
+  bob <- allocateParty "TransferMismatchV1Bob"
+  carol <- allocateParty "TransferMismatchV1Carol"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-MISMATCH-PRE-V1"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  -- carol's preapproval, but alice claims to send to bob.
+  carolPreCid <- submit carol do createCmd TransferPreapproval with owner = carol, instrumentId
+  factoryDisc <- discloseFactory admin factoryCid
+  carolPreDisc <- fromSome <$> queryDisclosure carol carolPreCid
+  t0 <- getTime
+  res <- trySubmit (actAs alice <> disclose factoryDisc <> disclose carolPreDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice bob 0.01 instrumentId [coinCid]
+      extraArgs = extraArgsWithPreapproval carolPreCid
+  -- receiver != owner mismatch aborts inside TransferPreapproval_Receive.
+  expectAbort "preapproval owner is not this transfer's receiver" res
+
+-- | With empty inputs and a negative amount, the positivity guard must abort
+-- before the coverage/change arithmetic can mint a change coin from nothing.
+testCoinTransferRejectsNegativeAmountV1 : Script ()
+testCoinTransferRejectsNegativeAmountV1 = do
+  admin <- allocateParty "TransferNegV1Admin"
+  alice <- allocateParty "TransferNegV1Alice"
+  bob <- allocateParty "TransferNegV1Bob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-NEG-V1"
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- trySubmit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice bob (-0.01) instrumentId []
+      extraArgs = emptyExtraArgs
+  expectAbort "transfer amount must be positive" res
+  coins <- query @Coin admin
+  coins === []
+
+----------------------------------------------------------------------
+-- executeBefore / requestedAt window enforcement
+----------------------------------------------------------------------
+
+testCoinTransferRejectsExpiredExecuteBeforeV1 : Script ()
+testCoinTransferRejectsExpiredExecuteBeforeV1 = do
+  admin <- allocateParty "TransferExpiredV1Admin"
+  alice <- allocateParty "TransferExpiredV1Alice"
+  bob <- allocateParty "TransferExpiredV1Bob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-EXPIRED-V1"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  let transfer = (mkTransferV1 t0 alice bob 0.006 instrumentId [coinCid])
+        with executeBefore = t0 `addRelTime` hours (-1)
+  res <- trySubmit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin, transfer, extraArgs = emptyExtraArgs
+  expectAbort "executeBefore has passed" res
+
+-- | A pending v1 transfer whose 'executeBefore' has passed by the time
+-- accept is attempted: accept is gated, but reject/withdraw still return funds.
+testCoinTransferAcceptRejectedAfterExecuteBefore : Script ()
+testCoinTransferAcceptRejectedAfterExecuteBefore = do
+  admin <- allocateParty "TransferAcceptExpiredAdmin"
+  alice <- allocateParty "TransferAcceptExpiredAlice"
+  bob <- allocateParty "TransferAcceptExpiredBob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-ACCEPT-EXPIRED"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  let transfer = (mkTransferV1 t0 alice bob 0.006 instrumentId [coinCid])
+        with executeBefore = t0 `addRelTime` hours 1
+  res <- submit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin, transfer, extraArgs = emptyExtraArgs
+  let TIV1.TransferInstructionResult_Pending{transferInstructionCid} = res.output
+
+  passTime (hours 2)
+
+  acceptFailed <- trySubmit bob do
+    exerciseCmd transferInstructionCid TIV1.TransferInstruction_Accept with extraArgs = emptyExtraArgs
+  expectAbort "accept is no longer allowed" acceptFailed
+
+  rejectRes <- submit bob do
+    exerciseCmd transferInstructionCid TIV1.TransferInstruction_Reject with extraArgs = emptyExtraArgs
+  case rejectRes.senderChangeCids of
+    [cid] -> do
+      Some c <- queryContractId admin (coerceContractId @Holding @Coin cid)
+      c.owner === alice
+      c.amount === 0.006
+    other -> abort ("expected one returned coin, got: " <> show other)

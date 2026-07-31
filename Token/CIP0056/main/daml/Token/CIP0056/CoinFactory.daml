@@ -1,0 +1,109 @@
+-- | The genesis 'CoinFactory': a 'BurnMintFactory' plus
+-- 'TransferFactory'/'AllocationFactory' v1.
+-- Signatory admin alone, created once and never replaced;
+-- instrumentId.admin must always equal admin.
+module Token.CIP0056.CoinFactory where
+
+import DA.Foldable (forA_)
+
+import Splice.Api.Token.AllocationInstructionV1
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.BurnMintV1
+  ( BurnMintFactory, BurnMintFactoryView (..)
+  , BurnMintFactory_BurnMintResult (..)
+  )
+import Splice.Api.Token.HoldingV1 (Holding, InstrumentId (..))
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Splice.Api.Token.TransferInstructionV1 qualified as TIV1
+import Token.CIP0056.Coin
+import Token.CIP0056.CoinAllocation
+import Token.CIP0056.CoinTransfer
+
+template CoinFactory
+  with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance BurnMintFactory for CoinFactory where
+      view = BurnMintFactoryView with admin = admin, meta = emptyMetadata
+
+      burnMintFactory_burnMintImpl _self arg = do
+        assertMsg "cip0056: CoinFactory only serves instruments administered by admin"
+          (arg.instrumentId.admin == admin)
+        assertMsg "cip0056: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        forA_ arg.inputHoldingCids \cid -> do
+          r <- fetchFromInterface @Coin cid
+          case r of
+            None -> abort "cip0056: burn input is not a Coin issued by this registry"
+            Some (_, coin) ->
+              assertMsg "cip0056: burn input's instrument does not match the requested instrumentId"
+                (coin.instrumentId == arg.instrumentId)
+          archive cid
+        outputCids <- forA arg.outputs \o ->
+          toInterfaceContractId @Holding <$> createCoin arg.instrumentId o.owner o.amount
+        pure BurnMintFactory_BurnMintResult with outputCids
+
+      burnMintFactory_publicFetchImpl _self arg = do
+        assertMsg "cip0056: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        pure BurnMintFactoryView with admin = admin, meta = emptyMetadata
+
+    interface instance TIV1.TransferFactory for CoinFactory where
+      view = TIV1.TransferFactoryView with admin = admin, meta = emptyMetadata
+
+      transferFactory_transferImpl _self arg = do
+        assertMsg "cip0056: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        let t = arg.transfer
+        assertTransferWindow t.requestedAt t.executeBefore
+        outcome <- transferCore admin (t.sender == t.receiver)
+          t.sender t.receiver t.amount t.instrumentId t.inputHoldingCids arg.extraArgs
+        case outcome of
+          CoreCompleted{receiverCid, senderChangeCids} ->
+            pure TIV1.TransferInstructionResult with
+              output = TIV1.TransferInstructionResult_Completed with receiverHoldingCids = [receiverCid]
+              senderChangeCids
+              meta = emptyMetadata
+          CorePendingNeeded{senderChangeCids} -> do
+            instructionCid <- create CoinTransferInstruction with
+              instrumentId = t.instrumentId, sender = t.sender, receiver = t.receiver, amount = t.amount
+              requestedAt = t.requestedAt, executeBefore = t.executeBefore
+            pure TIV1.TransferInstructionResult with
+              output = TIV1.TransferInstructionResult_Pending with
+                transferInstructionCid = toInterfaceContractId instructionCid
+              senderChangeCids
+              meta = emptyMetadata
+
+      transferFactory_publicFetchImpl _self arg = do
+        assertMsg "cip0056: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        pure TIV1.TransferFactoryView with admin = admin, meta = emptyMetadata
+
+    interface instance AllocationFactory for CoinFactory where
+      view = AllocationFactoryView with admin = admin, meta = emptyMetadata
+
+      allocationFactory_allocateImpl _self arg = do
+        let spec = arg.allocation
+            leg = spec.transferLeg
+        assertMsg "cip0056: CoinFactory only serves instruments administered by admin"
+          (leg.instrumentId.admin == admin)
+        assertMsg "cip0056: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        assertMsg "cip0056: allocation amount must be positive" (leg.amount > 0.0)
+        now <- getTime
+        assertMsg "cip0056: allocation window (allocateBefore) has passed" (now < spec.settlement.allocateBefore)
+        senderChangeCids <-
+          debitInputs "allocation" leg.instrumentId leg.sender leg.amount arg.inputHoldingCids
+        allocationCid <- toInterfaceContractId @Allocation <$> create CoinAllocation with
+          instrumentId = leg.instrumentId, allocation = spec
+        pure AllocationInstructionResult with
+          output = AllocationInstructionResult_Completed with allocationCid
+          senderChangeCids
+          meta = emptyMetadata
+
+      allocationFactory_publicFetchImpl _self arg = do
+        assertMsg "cip0056: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        pure AllocationFactoryView with admin = admin, meta = emptyMetadata

@@ -1,0 +1,30 @@
+# Test package: Daml Scripts that exercise the CIP-0056 example templates.
+# Kept separate from the production package so daml-script stays out of the
+# uploadable token-cip0056 DAR.
+#
+# It data-depends on the locally built main DAR plus the vendored Splice v1
+# token-standard API DARs. The root multi-package.yaml ensures the main
+# package is built first.
+sdk-version: 3.5.1
+name: token-cip0056-test
+version: 0.1.0
+source: daml
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+build-options:
+  # Daml-LF 2.3 (Protocol Version 35), matching main.
+  - --target=2.3
+  # TestCoinAuthenticity defines a ForgedHolding template implementing the
+  # Holding interface inside this daml-script package deliberately -- it must
+  # never ship in a production DAR.
+  - -Wno-template-interface-depends-on-daml-script
+data-dependencies:
+  - ../main/.daml/dist/token-cip0056-0.1.0.dar
+  - ../../../dars/splice-api-token-metadata-v1-1.0.0.dar
+  - ../../../dars/splice-api-token-holding-v1-1.0.0.dar
+  - ../../../dars/splice-api-token-allocation-v1-1.0.0.dar
+  - ../../../dars/splice-api-token-allocation-instruction-v1-1.0.0.dar
+  - ../../../dars/splice-api-token-burn-mint-v1-1.0.0.dar
+  - ../../../dars/splice-api-token-transfer-instruction-v1-1.0.0.dar

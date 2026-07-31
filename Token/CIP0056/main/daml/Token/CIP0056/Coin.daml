@@ -1,0 +1,30 @@
+-- | The admin-owned token registry: the 'Coin' holding, a CIP-0056
+-- token-standard asset. See 'Token.CIP0056.CoinTransfer',
+-- 'Token.CIP0056.CoinAllocation', and 'Token.CIP0056.CoinFactory' for the
+-- genesis factory and the templates it produces.
+module Token.CIP0056.Coin where
+
+import Splice.Api.Token.HoldingV1 (Holding, HoldingView (..), InstrumentId)
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+
+-- A token holding.
+template Coin
+  with
+    instrumentId : InstrumentId
+    owner        : Party
+    amount       : Decimal
+  where
+    signatory instrumentId.admin :: owner :: []
+    ensure amount > 0.0
+
+    interface instance Holding for Coin where
+      view = HoldingView with
+        owner
+        instrumentId
+        amount
+        lock = None
+        meta = emptyMetadata
+
+-- | Create a coin owned by the given party.
+createCoin : InstrumentId -> Party -> Decimal -> Update (ContractId Coin)
+createCoin instrumentId owner amount = create Coin with instrumentId, owner, amount

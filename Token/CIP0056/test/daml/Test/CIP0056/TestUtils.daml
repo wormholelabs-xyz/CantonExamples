@@ -1,0 +1,49 @@
+-- | Shared scaffolding for the CIP-0056 example tests.
+module Test.CIP0056.TestUtils where
+
+import Daml.Script
+import DA.Text (isInfixOf)
+
+import Splice.Api.Token.HoldingV1 (InstrumentId, Holding)
+import Splice.Api.Token.MetadataV1 (ExtraArgs(..), emptyChoiceContext, emptyMetadata)
+import Splice.Api.Token.BurnMintV1
+  (BurnMintFactory, BurnMintFactory_BurnMint(..), BurnMintOutput(..))
+import Token.CIP0056.CoinFactory (CoinFactory(..))
+
+-- | The registry-independent 'ExtraArgs' fixture used throughout these
+-- tests: no choice context, no metadata.
+emptyExtraArgs : ExtraArgs
+emptyExtraArgs = ExtraArgs with context = emptyChoiceContext, meta = emptyMetadata
+
+-- | Assert that a submission failed with a message containing @needle@.
+expectAbort : Text -> Either SubmitError a -> Script ()
+expectAbort needle res = case res of
+  Left (FailureStatusError fs) ->
+    assertMsg ("expected failure containing '" <> needle <> "', got: " <> fs.message)
+      (needle `isInfixOf` fs.message)
+  Left err -> abort ("expected failure containing '" <> needle <> "', got: " <> show err)
+  Right _ -> abort ("submission succeeded; expected failure containing '" <> needle <> "'")
+
+-- | Bootstrap the singleton, admin-owned 'CoinFactory'.
+coinFactorySetup : Party -> Script (ContractId CoinFactory)
+coinFactorySetup admin = submit admin do createCmd CoinFactory with admin
+
+-- | The interface-typed handle tests exercise burn/mint choices on.
+asBurnMintFactory : ContractId CoinFactory -> ContractId BurnMintFactory
+asBurnMintFactory = toInterfaceContractId @BurnMintFactory
+
+-- | Mint one coin directly against the factory -- the only way to seed an
+-- initial balance outside of a real inbound transfer.
+mintCoin : ContractId CoinFactory -> Party -> InstrumentId -> Party -> Decimal -> Script (ContractId Holding)
+mintCoin factoryCid admin instrumentId owner amount = do
+  res <- submit (actAs admin <> actAs owner) do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId
+      inputHoldingCids = []
+      outputs = [BurnMintOutput with owner, amount, context = emptyExtraArgs.context]
+      extraActors = [owner]
+      extraArgs = emptyExtraArgs
+  case res.outputCids of
+    [cid] -> pure cid
+    _ -> abort ("expected exactly one minted coin, got: " <> show res.outputCids)
