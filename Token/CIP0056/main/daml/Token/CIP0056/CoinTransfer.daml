@@ -60,7 +60,7 @@ template CoinTransferInstruction
     requestedAt   : Time
     executeBefore : Time
   where
-    signatory instrumentId.admin :: sender :: []
+    signatory instrumentId.admin, sender
     observer receiver
 
     interface instance TIV1.TransferInstruction for CoinTransferInstruction where
