@@ -60,7 +60,7 @@ fields and confirms every debit path rejects it.
 `tokens/cip0056` is templates only -- no `daml-script` -- so it can be
 uploaded to a participant as-is. `tokens/cip0056-test` carries the
 daml-script scenarios and data-depends on the production package's built DAR
-(`../cip0056/.daml/dist/token-cip0056-0.1.0.dar`). This keeps test code and
+(`../cip0056/.daml/dist/token-cip0056-0.2.0.dar`). This keeps test code and
 the `daml-script` dependency out of the uploadable artifact.
 
 ## Layering constraints (why CIP0112 can't just reuse these templates)

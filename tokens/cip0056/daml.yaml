@@ -5,7 +5,7 @@
 # daml-script, so it can be uploaded to a participant.
 sdk-version: 3.5.1
 name: token-cip0056
-version: 0.1.0
+version: 0.2.0
 source: daml
 dependencies:
   - daml-prim

@@ -16,6 +16,7 @@ import Splice.Api.Token.HoldingV1 (Holding, HoldingView(..), InstrumentId(..))
 import Splice.Api.Token.MetadataV1 (emptyMetadata)
 import Splice.Api.Token.TransferInstructionV1 qualified as TIV1
 import Token.CIP0056.Coin
+import Token.CIP0056.CoinAllocation (CoinAllocation(..))
 import Token.CIP0056.CoinFactory
 import Token.CIP0056.CoinTransfer (TransferPreapproval(..))
 import Test.CIP0056.TestUtils (coinFactorySetup, mintCoin, emptyExtraArgs, expectAbort)
@@ -74,6 +75,37 @@ tryV1Allocate factoryCid admin actor spec inputHoldingCids = do
       requestedAt = t0
       inputHoldingCids
       extraArgs = emptyExtraArgs
+
+----------------------------------------------------------------------
+-- Forged CoinAllocation rejected without the instrument admin's authority
+----------------------------------------------------------------------
+
+testForgedAllocationRequiresInstrumentAdmin : Script ()
+testForgedAllocationRequiresInstrumentAdmin = do
+  admin <- allocateParty "ForgedAllocAdmin"
+  attacker <- allocateParty "ForgedAllocAttacker"
+  receiver <- allocateParty "ForgedAllocReceiver"
+  executor <- allocateParty "ForgedAllocExecutor"
+  let realInstrumentId = InstrumentId with admin, id = "FORGED-ALLOC-REAL"
+      attackerInstrumentId = InstrumentId with admin = attacker, id = "FORGED-ALLOC-ATTACKER"
+  t0 <- getTime
+
+  let forgedSpec = v1AllocSpec t0 executor attacker receiver 1000000.0 realInstrumentId
+  forgedRes <- trySubmit attacker do
+    createCmd CoinAllocation with allocation = forgedSpec
+  case forgedRes of
+    Left _ -> pure ()
+    Right _ -> abort "forged CoinAllocation naming the real admin's instrument was created by the attacker alone"
+
+  let honestSpec = v1AllocSpec t0 executor attacker receiver 1000000.0 attackerInstrumentId
+  honestCid <- submit attacker do
+    createCmd CoinAllocation with allocation = honestSpec
+  Some honestView <- queryInterfaceContractId attacker (toInterfaceContractId @Allocation honestCid)
+  honestView.allocation.transferLeg.instrumentId === attackerInstrumentId
+  honestView.allocation.transferLeg.instrumentId.admin === attacker
+
+  supply <- query @Coin admin
+  [c | (_, c) <- supply, c.instrumentId == realInstrumentId] === []
 
 ----------------------------------------------------------------------
 -- Forged Holding rejected on every input-holding surface
