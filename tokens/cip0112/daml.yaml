@@ -1,0 +1,28 @@
+# The uploadable CIP-0112 token example: a singleton, multi-instrument coin
+# factory (`CoinFactory`) whose templates implement both the Splice Token
+# Standard v1 interfaces (`BurnMintFactory`, `TransferFactory`,
+# `AllocationFactory`) and their v2 counterparts (`TransferFactory`,
+# `AllocationFactory`, `SettlementFactory` over the account-model
+# `HoldingV2`), plus the `Coin`/`CoinAllocationV2` templates they produce.
+# Templates only, no daml-script, so it can be uploaded to a participant.
+sdk-version: 3.5.1
+name: token-cip0112
+version: 0.1.0
+source: daml
+dependencies:
+  - daml-prim
+  - daml-stdlib
+build-options:
+  # Daml-LF 2.3 (Protocol Version 35).
+  - --target=2.3
+data-dependencies:
+  - ../../dars/splice-api-token-holding-v1-1.0.0.dar
+  - ../../dars/splice-api-token-metadata-v1-1.0.0.dar
+  - ../../dars/splice-api-token-allocation-v1-1.0.0.dar
+  - ../../dars/splice-api-token-allocation-instruction-v1-1.0.0.dar
+  - ../../dars/splice-api-token-transfer-instruction-v1-1.0.0.dar
+  - ../../dars/splice-api-token-burn-mint-v1-1.0.0.dar
+  - ../../dars/splice-api-token-holding-v2-1.0.0.dar
+  - ../../dars/splice-api-token-allocation-v2-1.0.0.dar
+  - ../../dars/splice-api-token-allocation-instruction-v2-1.0.0.dar
+  - ../../dars/splice-api-token-transfer-instruction-v2-1.0.0.dar

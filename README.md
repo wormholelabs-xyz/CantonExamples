@@ -13,7 +13,7 @@ cross-example runtime dependency.
 | --- | --- | --- |
 | `dars/` | -- | Vendored Splice Token Standard interface DARs (shared, committed binaries; see `dars/README.md` for provenance and sha256). |
 | `tokens/cip0056` + `tokens/cip0056-test` | present | Token Standard v1: a singleton, multi-instrument coin factory implementing `BurnMintFactory`, `TransferFactory`, and `AllocationFactory`. |
-| `tokens/cip0112` + `tokens/cip0112-test` | planned | Token Standard v2: adds provider/account-holder fields to the coin, its own templates, its own vendored v2 DARs. Not yet extracted -- see "CIP0112 recipe" below. |
+| `tokens/cip0112` + `tokens/cip0112-test` | present | Token Standard v1 + v2: the same coin registry as `tokens/cip0056`'s, extended with provider/sub-account fields and the v2 `TransferFactory`/`AllocationFactory`/`SettlementFactory` interfaces on its own templates, backed by its own vendored v2 DARs. |
 
 `multi-package.yaml` at the repo root lists every package so `dpm build --all`
 builds them all in dependency order; each production/`-test` package pair is
@@ -51,30 +51,21 @@ Token Standard v1 interfaces and each other -- so the extraction is a rename
 no logic changes. See `dars/README.md` for the vendored-DAR provenance and
 `tokens/cip0056/README.md` for the example's own design notes.
 
-## CIP0112 recipe
+`tokens/cip0112` was extracted from the same source repo one commit earlier
+-- `002e9ed1~1`, the commit before the CIP-0056-only strip -- which still
+carried the Token Standard v2 templates (`CoinAllocationV2` and the v2 coin
+fields `provider`/`accountId`) alongside v1. Same rename treatment
+(`Wormhole.Ntt.*` to `Token.CIP0112.*`, `guardianGovernance` to `admin`,
+`NttCoin*`/`NttTransferInstruction` to their `Coin*`/`CoinTransferInstruction`
+counterparts), no logic changes. See `dars/README.md` for the v2 DAR
+provenance and `tokens/cip0112/README.md` for the example's own design notes.
 
-`tokens/cip0112` is not yet extracted. When it is, the source is the same NTT
-repo one commit before the CIP-0056-only strip -- `002e9ed1~1` -- which still
-carries the Token Standard v2 templates (`CoinAllocationV2` and the v2 coin
-fields `provider`/`accountId`) alongside v1. This repo's layout anticipates
-that extraction:
+## CIP0112 example
 
-1. Create `tokens/cip0112` and `tokens/cip0112-test` mirroring
-   `tokens/cip0056`'s shape; package names `token-cip0112` and
-   `token-cip0112-test`.
-2. Restore the four Token Standard v2 DARs into `/dars/` from NTT history
-   (`git show 002e9ed1~1:canton/dars/…` in
-   `wormholelabs-xyz/native-token-transfers`), verify each against the
-   sha256 table in `002e9ed1~1:canton/dars/README.md`, and append rows plus a
-   v2 provenance paragraph to `dars/README.md`.
-3. Seed sources from the parent commit's combined v1+v2 files
-   (`002e9ed1~1:canton/ntt/daml/Wormhole/Ntt/{Coin,CoinFactory,CoinTransfer,CoinAllocation,CoinAllocationV2}.daml`
-   and the corresponding v2 test files), renamed into `Token.CIP0112.*`. Note
-   that CIP0112's `Coin` is its own template (different fields and
-   signatories from CIP0056's) -- see "Layering constraints" in
-   `tokens/cip0056/README.md` for why genuine template sharing isn't possible
-   across Token Standard versions.
-4. Copy `TestUtils` from `tokens/cip0056-test` and extend it with v2 account
-   helpers.
-5. Append `./tokens/cip0112` and `./tokens/cip0112-test` to the root
-   `multi-package.yaml`. No `tokens/cip0056` file needs to change.
+`tokens/cip0112` extends `tokens/cip0056`'s coin registry with Token
+Standard v2 (CIP-0112): account-model holdings (owner/provider/sub-account),
+actors-based v2 transfers with synchronous completion, and multi-leg net
+settlement via `SettlementFactory_SettleBatch`. See
+`tokens/cip0112/README.md` for what v2 adds, how one template set implements
+both standard versions, and the `ExtraArgs` context-key conventions it
+relies on.

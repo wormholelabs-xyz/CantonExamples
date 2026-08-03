@@ -7,5 +7,5 @@
 packages:
   - ./tokens/cip0056
   - ./tokens/cip0056-test
-  # - ./tokens/cip0112
-  # - ./tokens/cip0112-test
+  - ./tokens/cip0112
+  - ./tokens/cip0112-test
