@@ -97,7 +97,7 @@ template CoinFactory
         senderChangeCids <-
           debitInputs "allocation" leg.instrumentId leg.sender leg.amount arg.inputHoldingCids
         allocationCid <- toInterfaceContractId @Allocation <$> create CoinAllocation with
-          instrumentId = leg.instrumentId, allocation = spec
+          allocation = spec
         pure AllocationInstructionResult with
           output = AllocationInstructionResult_Completed with allocationCid
           senderChangeCids
