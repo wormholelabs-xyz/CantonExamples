@@ -1,12 +1,11 @@
-# Root multi-package project for the CantonExamples repo. Each top-level
-# example family (Token/CIP0056, and later Token/CIP0112) is a pair of
-# sibling packages: `main` (templates only, uploadable, no daml-script) and
-# `test` (daml-script, data-depends on `main`'s built DAR). Both share the
-# vendored DARs under /dars (see dars/README.md) via relative
-# data-dependencies, so `dpm build --all` from the repo root builds every
-# example in dependency order.
+# Root multi-package project for the CantonExamples repo. Each example is a
+# pair of sibling packages: a production package (templates only, uploadable,
+# no daml-script) and a `-test` package (daml-script, data-depends on the
+# production DAR). All packages share the vendored DARs under /dars (see
+# dars/README.md) via relative data-dependencies, so `dpm build --all` from
+# the repo root builds every example in dependency order.
 packages:
-  - ./Token/CIP0056/main
-  - ./Token/CIP0056/test
-  # - ./Token/CIP0112/main
-  # - ./Token/CIP0112/test
+  - ./tokens/cip0056
+  - ./tokens/cip0056-test
+  # - ./tokens/cip0112
+  # - ./tokens/cip0112-test

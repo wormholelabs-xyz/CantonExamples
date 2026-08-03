@@ -1,4 +1,4 @@
-# Token/CIP0056
+# token-cip0056
 
 A minimal example of Canton's Splice Token Standard v1 (CIP-0056): a
 singleton, multi-instrument coin registry that implements the
@@ -51,29 +51,29 @@ with `fetchFromInterface @Coin`, not by trusting the caller-supplied
 `owner`/`amount`/`instrumentId` it likes. Pinning the fetch to the concrete
 `Coin` template means only contracts actually created by `createCoin` (and
 thus actually signed by the right `instrumentId.admin`) can be spent as
-value. `Token/CIP0056/test`'s `TestCoinAuthenticity` suite proves this with
+value. `tokens/cip0056-test`'s `TestCoinAuthenticity` suite proves this with
 a `ForgedHolding` template that implements `Holding` with attacker-chosen
 fields and confirms every debit path rejects it.
 
-## main/test split
+## Production/test package split
 
-`Token/CIP0056/main` is templates only -- no `daml-script` -- so it can be
-uploaded to a participant as-is. `Token/CIP0056/test` carries the
-daml-script scenarios and data-depends on `main`'s built DAR
-(`../main/.daml/dist/token-cip0056-0.1.0.dar`). This keeps test code and the
-`daml-script` dependency out of the uploadable artifact.
+`tokens/cip0056` is templates only -- no `daml-script` -- so it can be
+uploaded to a participant as-is. `tokens/cip0056-test` carries the
+daml-script scenarios and data-depends on the production package's built DAR
+(`../cip0056/.daml/dist/token-cip0056-0.1.0.dar`). This keeps test code and
+the `daml-script` dependency out of the uploadable artifact.
 
 ## Layering constraints (why CIP0112 can't just reuse these templates)
 
 Daml requires an interface instance to be declared alongside either the
 interface or the template it's for -- you cannot bolt a new interface
 instance onto an existing template from a different module. Token Standard
-v2 (the planned `Token/CIP0112` example) changes the coin's own fields and
+v2 (the planned `tokens/cip0112` example) changes the coin's own fields and
 signatories (adding `provider`/`accountId`), which means its `Coin` is
 necessarily a different template from this one, not an extension of it.
 Consequently there is no way to share `Coin`/`CoinFactory` template
 *definitions* across Token Standard versions: each version brings its own
 templates. What genuinely carries over is the vendored-DAR mechanism (`/dars`
 plus `dars/README.md`'s provenance/sha256 convention) and the directory
-shape (`main`/`test` sibling packages, `TestUtils` helper scaffolding) --
-structural conventions, not shared code.
+shape (production/`-test` sibling packages, `TestUtils` helper scaffolding)
+-- structural conventions, not shared code.
