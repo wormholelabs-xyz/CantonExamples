@@ -1,0 +1,340 @@
+-- | Adversarial probes against the value-consumption path ('debitInputs' in
+-- 'Token.CIP0056.CoinTransfer', plus the instruction/allocation lifecycles
+-- that mint against an earlier debit). Each probe attempts a forgery and
+-- fails loudly if the ledger accepts it or if total supply moves.
+module Test.CIP0056.ProbeConsumeHolding where
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Optional (fromSome)
+import DA.Time (hours, addRelTime)
+
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.AllocationInstructionV1
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Splice.Api.Token.TransferInstructionV1 qualified as TIV1
+import Token.CIP0056.Coin
+import Token.CIP0056.CoinTransfer
+import Test.CIP0056.TestUtils (coinFactorySetup, mintCoin, emptyExtraArgs)
+import Test.CIP0056.TestCoinTransfer
+  (asTransferFactoryV1, discloseFactory, mkTransferV1, extraArgsWithPreapproval)
+
+-- | Total genuine 'Coin' supply for one instrument, as seen by admin
+-- (a signatory of every 'Coin').
+supplyOf : Party -> InstrumentId -> Script Decimal
+supplyOf admin instrumentId = do
+  coins <- query @Coin admin
+  pure (sum [c.amount | (_, c) <- coins, c.instrumentId == instrumentId])
+
+balanceOf : Party -> Party -> InstrumentId -> Script Decimal
+balanceOf admin owner instrumentId = do
+  coins <- query @Coin admin
+  pure (sum [c.amount | (_, c) <- coins, c.owner == owner, c.instrumentId == instrumentId])
+
+-- | Report an attack that the ledger accepted.
+mustFail : Text -> Either SubmitError a -> Script ()
+mustFail label res = case res of
+  Left _ -> pure ()
+  Right _ -> abort ("EXPLOIT: " <> label <> " was ACCEPTED by the ledger")
+
+----------------------------------------------------------------------
+-- Group A: debitInputs input-set forgery
+----------------------------------------------------------------------
+
+-- | Feed a Coin of instrument B into a transfer of instrument A. If the
+-- instrument check were missing, A's supply would grow backed by B's value.
+probeCrossInstrumentInputTransfer : Script ()
+probeCrossInstrumentInputTransfer = do
+  admin <- allocateParty "ProbeXInstrAdmin"
+  alice <- allocateParty "ProbeXInstrAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrA = InstrumentId with admin, id = "PROBE-X-A"
+      instrB = InstrumentId with admin, id = "PROBE-X-B"
+  coinB <- mintCoin factoryCid admin instrB alice 100.0
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- trySubmit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice alice 100.0 instrA [coinB]
+      extraArgs = emptyExtraArgs
+  mustFail "cross-instrument input (B funding an A transfer)" res
+  supplyA <- supplyOf admin instrA
+  supplyB <- supplyOf admin instrB
+  supplyA === 0.0
+  supplyB === 100.0
+
+-- | Same forgery against the allocation path, which shares 'debitInputs'.
+probeCrossInstrumentInputAllocate : Script ()
+probeCrossInstrumentInputAllocate = do
+  admin <- allocateParty "ProbeXAllocAdmin"
+  alice <- allocateParty "ProbeXAllocAlice"
+  bob <- allocateParty "ProbeXAllocBob"
+  carol <- allocateParty "ProbeXAllocCarol"
+  factoryCid <- coinFactorySetup admin
+  let instrA = InstrumentId with admin, id = "PROBE-XA-A"
+      instrB = InstrumentId with admin, id = "PROBE-XA-B"
+  coinB <- mintCoin factoryCid admin instrB alice 100.0
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  let spec = AllocationSpecification with
+        settlement = SettlementInfo with
+          executor = carol
+          settlementRef = Reference with id = "probe", cid = None
+          requestedAt = t0
+          allocateBefore = t0 `addRelTime` hours 1
+          settleBefore = t0 `addRelTime` hours 2
+          meta = emptyMetadata
+        transferLegId = "probe-leg"
+        transferLeg = TransferLeg with
+          sender = alice, receiver = bob, amount = 100.0
+          instrumentId = instrA, meta = emptyMetadata
+  res <- trySubmit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (toInterfaceContractId @AllocationFactory factoryCid) AllocationFactory_Allocate with
+      expectedAdmin = admin
+      allocation = spec
+      requestedAt = t0
+      inputHoldingCids = [coinB]
+      extraArgs = emptyExtraArgs
+  mustFail "cross-instrument input on the allocation path" res
+  supplyA <- supplyOf admin instrA
+  supplyA === 0.0
+
+-- | Interleave a duplicate among distinct inputs: [c1, c2, c1]. Double
+-- counting c1 would cover 0.025 out of a real 0.02.
+probeInterleavedDuplicateInput : Script ()
+probeInterleavedDuplicateInput = do
+  admin <- allocateParty "ProbeDupMixAdmin"
+  alice <- allocateParty "ProbeDupMixAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "PROBE-DUP-MIX"
+  c1 <- mintCoin factoryCid admin instrumentId alice 0.01
+  c2 <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- trySubmit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 alice alice 0.025 instrumentId [c1, c2, c1]
+      extraArgs = emptyExtraArgs
+  mustFail "interleaved duplicate input [c1,c2,c1]" res
+  supply <- supplyOf admin instrumentId
+  supply === 0.02
+
+-- | Duplicate input on the allocation path (only the transfer path is pinned
+-- by the existing suite).
+probeDuplicateInputAllocate : Script ()
+probeDuplicateInputAllocate = do
+  admin <- allocateParty "ProbeDupAllocAdmin"
+  alice <- allocateParty "ProbeDupAllocAlice"
+  bob <- allocateParty "ProbeDupAllocBob"
+  carol <- allocateParty "ProbeDupAllocCarol"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "PROBE-DUP-ALLOC"
+  c1 <- mintCoin factoryCid admin instrumentId alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  let spec = AllocationSpecification with
+        settlement = SettlementInfo with
+          executor = carol
+          settlementRef = Reference with id = "probe", cid = None
+          requestedAt = t0
+          allocateBefore = t0 `addRelTime` hours 1
+          settleBefore = t0 `addRelTime` hours 2
+          meta = emptyMetadata
+        transferLegId = "probe-leg"
+        transferLeg = TransferLeg with
+          sender = alice, receiver = bob, amount = 0.02
+          instrumentId, meta = emptyMetadata
+  res <- trySubmit (actAs alice <> disclose factoryDisc) do
+    exerciseCmd (toInterfaceContractId @AllocationFactory factoryCid) AllocationFactory_Allocate with
+      expectedAdmin = admin
+      allocation = spec
+      requestedAt = t0
+      inputHoldingCids = [c1, c1]
+      extraArgs = emptyExtraArgs
+  mustFail "duplicate input cid on the allocation path" res
+  supply <- supplyOf admin instrumentId
+  supply === 0.01
+
+----------------------------------------------------------------------
+-- Group B: CoinTransferInstruction lifecycle replay / double-spend
+----------------------------------------------------------------------
+
+-- | Drive a transfer to the pending state and hand back the instruction cid.
+pendingInstruction
+  : Party -> Party -> Party -> InstrumentId -> Decimal
+  -> Script (ContractId TIV1.TransferInstruction)
+pendingInstruction admin sender receiver instrumentId amount = do
+  factoryCid <- coinFactorySetup admin
+  coinCid <- mintCoin factoryCid admin instrumentId sender amount
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+  res <- submit (actAs sender <> disclose factoryDisc) do
+    exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+      expectedAdmin = admin
+      transfer = mkTransferV1 t0 sender receiver amount instrumentId [coinCid]
+      extraArgs = emptyExtraArgs
+  case res.output of
+    TIV1.TransferInstructionResult_Pending{transferInstructionCid} -> pure transferInstructionCid
+    other -> abort ("expected Pending, got: " <> show other)
+
+-- | Reject must be consuming: it mints the funds back to the sender without
+-- ever archiving explicitly, so a replayable reject is an unbounded mint.
+probeRejectIsNotReplayable : Script ()
+probeRejectIsNotReplayable = do
+  admin <- allocateParty "ProbeRejectReplayAdmin"
+  alice <- allocateParty "ProbeRejectReplayAlice"
+  bob <- allocateParty "ProbeRejectReplayBob"
+  let instrumentId = InstrumentId with admin, id = "PROBE-REJECT-REPLAY"
+  instrCid <- pendingInstruction admin alice bob instrumentId 0.01
+
+  _ <- submit bob do
+    exerciseCmd instrCid TIV1.TransferInstruction_Reject with extraArgs = emptyExtraArgs
+  afterFirst <- supplyOf admin instrumentId
+  afterFirst === 0.01
+
+  replay <- trySubmit bob do
+    exerciseCmd instrCid TIV1.TransferInstruction_Reject with extraArgs = emptyExtraArgs
+  mustFail "replayed TransferInstruction_Reject" replay
+  final <- supplyOf admin instrumentId
+  final === 0.01
+
+-- | Same for withdraw, which also mints back to the sender.
+probeWithdrawIsNotReplayable : Script ()
+probeWithdrawIsNotReplayable = do
+  admin <- allocateParty "ProbeWithdrawReplayAdmin"
+  alice <- allocateParty "ProbeWithdrawReplayAlice"
+  bob <- allocateParty "ProbeWithdrawReplayBob"
+  let instrumentId = InstrumentId with admin, id = "PROBE-WITHDRAW-REPLAY"
+  instrCid <- pendingInstruction admin alice bob instrumentId 0.01
+
+  _ <- submit alice do
+    exerciseCmd instrCid TIV1.TransferInstruction_Withdraw with extraArgs = emptyExtraArgs
+  replay <- trySubmit alice do
+    exerciseCmd instrCid TIV1.TransferInstruction_Withdraw with extraArgs = emptyExtraArgs
+  mustFail "replayed TransferInstruction_Withdraw" replay
+  final <- supplyOf admin instrumentId
+  final === 0.01
+
+-- | Accept replay: the receiver mints twice off one debit.
+probeAcceptIsNotReplayable : Script ()
+probeAcceptIsNotReplayable = do
+  admin <- allocateParty "ProbeAcceptReplayAdmin"
+  alice <- allocateParty "ProbeAcceptReplayAlice"
+  bob <- allocateParty "ProbeAcceptReplayBob"
+  let instrumentId = InstrumentId with admin, id = "PROBE-ACCEPT-REPLAY"
+  instrCid <- pendingInstruction admin alice bob instrumentId 0.01
+
+  _ <- submit bob do
+    exerciseCmd instrCid TIV1.TransferInstruction_Accept with extraArgs = emptyExtraArgs
+  replay <- trySubmit bob do
+    exerciseCmd instrCid TIV1.TransferInstruction_Accept with extraArgs = emptyExtraArgs
+  mustFail "replayed TransferInstruction_Accept" replay
+  final <- supplyOf admin instrumentId
+  final === 0.01
+
+-- | The headline transfer-path double-spend: the receiver accepts, then the
+-- sender pulls the same value back out via withdraw.
+probeAcceptThenWithdrawIsBlocked : Script ()
+probeAcceptThenWithdrawIsBlocked = do
+  admin <- allocateParty "ProbeAcceptWdrAdmin"
+  alice <- allocateParty "ProbeAcceptWdrAlice"
+  bob <- allocateParty "ProbeAcceptWdrBob"
+  let instrumentId = InstrumentId with admin, id = "PROBE-ACCEPT-WDR"
+  instrCid <- pendingInstruction admin alice bob instrumentId 0.01
+
+  _ <- submit bob do
+    exerciseCmd instrCid TIV1.TransferInstruction_Accept with extraArgs = emptyExtraArgs
+  wdr <- trySubmit alice do
+    exerciseCmd instrCid TIV1.TransferInstruction_Withdraw with extraArgs = emptyExtraArgs
+  mustFail "withdraw after accept (sender reclaims settled funds)" wdr
+  rej <- trySubmit bob do
+    exerciseCmd instrCid TIV1.TransferInstruction_Reject with extraArgs = emptyExtraArgs
+  mustFail "reject after accept" rej
+
+  aliceBal <- balanceOf admin alice instrumentId
+  bobBal <- balanceOf admin bob instrumentId
+  aliceBal === 0.0
+  bobBal === 0.01
+  supply <- supplyOf admin instrumentId
+  supply === 0.01
+
+-- | The mirror: the sender withdraws, then the receiver tries to accept the
+-- already-refunded instruction.
+probeWithdrawThenAcceptIsBlocked : Script ()
+probeWithdrawThenAcceptIsBlocked = do
+  admin <- allocateParty "ProbeWdrAcceptAdmin"
+  alice <- allocateParty "ProbeWdrAcceptAlice"
+  bob <- allocateParty "ProbeWdrAcceptBob"
+  let instrumentId = InstrumentId with admin, id = "PROBE-WDR-ACCEPT"
+  instrCid <- pendingInstruction admin alice bob instrumentId 0.01
+
+  _ <- submit alice do
+    exerciseCmd instrCid TIV1.TransferInstruction_Withdraw with extraArgs = emptyExtraArgs
+  acc <- trySubmit bob do
+    exerciseCmd instrCid TIV1.TransferInstruction_Accept with extraArgs = emptyExtraArgs
+  mustFail "accept after withdraw" acc
+
+  aliceBal <- balanceOf admin alice instrumentId
+  bobBal <- balanceOf admin bob instrumentId
+  aliceBal === 0.01
+  bobBal === 0.0
+
+----------------------------------------------------------------------
+-- Group C: TransferPreapproval as a standalone mint surface
+----------------------------------------------------------------------
+
+-- | 'TransferPreapproval' is @signatory owner@ alone, so an attacker can
+-- create one naming the real admin's instrument. 'TransferPreapproval_Receive'
+-- is nonconsuming and mints unbacked -- but is controlled by
+-- @instrumentId.admin@. Confirm the attacker cannot fire it.
+probeAttackerCannotFirePreapprovalMint : Script ()
+probeAttackerCannotFirePreapprovalMint = do
+  admin <- allocateParty "ProbePreMintAdmin"
+  mallory <- allocateParty "ProbePreMintMallory"
+  let instrumentId = InstrumentId with admin, id = "PROBE-PRE-MINT"
+
+  -- Self-signed preapproval naming the honest registry's instrument.
+  preCid <- submit mallory do
+    createCmd TransferPreapproval with owner = mallory, instrumentId
+
+  res <- trySubmit mallory do
+    exerciseCmd preCid TransferPreapproval_Receive with
+      receiver = mallory, amount = 1000000.0, expectedInstrumentId = instrumentId
+  mustFail "attacker firing TransferPreapproval_Receive on the admin's instrument" res
+
+  supply <- supplyOf admin instrumentId
+  supply === 0.0
+
+-- | A standing preapproval is reusable by design (nonconsuming). Confirm each
+-- reuse is still backed by its own debit, so supply never grows.
+probePreapprovalReuseStaysConserved : Script ()
+probePreapprovalReuseStaysConserved = do
+  admin <- allocateParty "ProbePreReuseAdmin"
+  alice <- allocateParty "ProbePreReuseAlice"
+  bob <- allocateParty "ProbePreReuseBob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "PROBE-PRE-REUSE"
+  c1 <- mintCoin factoryCid admin instrumentId alice 0.01
+  c2 <- mintCoin factoryCid admin instrumentId alice 0.01
+  preCid <- submit bob do createCmd TransferPreapproval with owner = bob, instrumentId
+  factoryDisc <- discloseFactory admin factoryCid
+  preDisc <- fromSome <$> queryDisclosure bob preCid
+  t0 <- getTime
+
+  let send cid = submit (actAs alice <> disclose factoryDisc <> disclose preDisc) do
+        exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+          expectedAdmin = admin
+          transfer = mkTransferV1 t0 alice bob 0.01 instrumentId [cid]
+          extraArgs = extraArgsWithPreapproval preCid
+  _ <- send c1
+  _ <- send c2
+
+  supply <- supplyOf admin instrumentId
+  supply === 0.02
+  bobBal <- balanceOf admin bob instrumentId
+  bobBal === 0.02
+  aliceBal <- balanceOf admin alice instrumentId
+  aliceBal === 0.0

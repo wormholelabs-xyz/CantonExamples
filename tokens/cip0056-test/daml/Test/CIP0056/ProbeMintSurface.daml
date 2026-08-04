@@ -1,0 +1,187 @@
+-- | Probes the unbacked-mint surfaces: 'BurnMintFactory_BurnMint' (no
+-- conservation check between inputs and outputs) and direct creation of the
+-- value-bearing templates. Establishes exactly whose authority each needs,
+-- and prints the rejection reason so a probe cannot pass for the wrong cause.
+module Test.CIP0056.ProbeMintSurface where
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Time (hours, addRelTime)
+
+import Splice.Api.Token.BurnMintV1
+  (BurnMintFactory, BurnMintFactory_BurnMint(..), BurnMintOutput(..))
+import Splice.Api.Token.HoldingV1 (InstrumentId(..))
+import Splice.Api.Token.TransferInstructionV1 qualified as TIV1
+import Token.CIP0056.Coin
+import Token.CIP0056.CoinTransfer
+import Token.CIP0056.CoinFactory
+import Test.CIP0056.TestUtils (coinFactorySetup, mintCoin, emptyExtraArgs)
+import Test.CIP0056.TestCoinTransfer (asTransferFactoryV1, discloseFactory, mkTransferV1)
+import Test.CIP0056.ProbeConsumeHolding (supplyOf)
+
+-- | Fail loudly if the attack was accepted; otherwise print why it was
+-- rejected, so the probe is proved to exercise the intended guard.
+mustFailShowing : Text -> Either SubmitError a -> Script ()
+mustFailShowing label res = case res of
+  Right _ -> abort ("EXPLOIT: " <> label <> " was ACCEPTED by the ledger")
+  Left err -> debug ("[rejected] " <> label <> " :: " <> show err)
+
+asBurnMint : ContractId CoinFactory -> ContractId BurnMintFactory
+asBurnMint = toInterfaceContractId @BurnMintFactory
+
+----------------------------------------------------------------------
+-- Is the unbacked burn/mint path reachable without the admin?
+----------------------------------------------------------------------
+
+-- | Attacker calls burn/mint with no inputs and an output to themselves,
+-- naming the honest admin. If this were reachable it is a direct mint.
+probeNonAdminCannotBurnMint : Script ()
+probeNonAdminCannotBurnMint = do
+  admin <- allocateParty "ProbeBMAdmin"
+  mallory <- allocateParty "ProbeBMMallory"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "PROBE-BM-NOADMIN"
+  factoryDisc <- discloseFactory admin factoryCid
+  res <- trySubmit (actAs mallory <> disclose factoryDisc) do
+    exerciseCmd (asBurnMint factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId
+      inputHoldingCids = []
+      outputs = [BurnMintOutput with owner = mallory, amount = 1000000.0, context = emptyExtraArgs.context]
+      extraActors = [mallory]
+      extraArgs = emptyExtraArgs
+  mustFailShowing "non-admin burn/mint naming the honest admin" res
+  supply <- supplyOf admin instrumentId
+  supply === 0.0
+
+-- | Same, but the attacker names themselves as expectedAdmin to satisfy any
+-- controller check, hoping the body's admin comparison is the only guard.
+probeSelfDeclaredAdminCannotBurnMint : Script ()
+probeSelfDeclaredAdminCannotBurnMint = do
+  admin <- allocateParty "ProbeBMSelfAdmin"
+  mallory <- allocateParty "ProbeBMSelfMallory"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "PROBE-BM-SELF"
+  factoryDisc <- discloseFactory admin factoryCid
+  res <- trySubmit (actAs mallory <> disclose factoryDisc) do
+    exerciseCmd (asBurnMint factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = mallory
+      instrumentId
+      inputHoldingCids = []
+      outputs = [BurnMintOutput with owner = mallory, amount = 1000000.0, context = emptyExtraArgs.context]
+      extraActors = [mallory]
+      extraArgs = emptyExtraArgs
+  mustFailShowing "attacker declaring itself expectedAdmin on burn/mint" res
+  supply <- supplyOf admin instrumentId
+  supply === 0.0
+
+-- | Attacker points burn/mint at an instrument whose admin is the attacker,
+-- but at the honest registry's factory contract.
+probeAttackerInstrumentOnHonestFactory : Script ()
+probeAttackerInstrumentOnHonestFactory = do
+  admin <- allocateParty "ProbeBMAttrAdmin"
+  mallory <- allocateParty "ProbeBMAttrMallory"
+  factoryCid <- coinFactorySetup admin
+  let mallorysInstrument = InstrumentId with admin = mallory, id = "PROBE-BM-ATTACKER"
+  factoryDisc <- discloseFactory admin factoryCid
+  res <- trySubmit (actAs mallory <> disclose factoryDisc) do
+    exerciseCmd (asBurnMint factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = mallory
+      instrumentId = mallorysInstrument
+      inputHoldingCids = []
+      outputs = [BurnMintOutput with owner = mallory, amount = 1000000.0, context = emptyExtraArgs.context]
+      extraActors = [mallory]
+      extraArgs = emptyExtraArgs
+  mustFailShowing "attacker-administered instrument on the honest factory" res
+
+-- | Documents that burn/mint itself has NO input/output conservation check:
+-- with the admin's authority, 0.01 in can become 1000.0 out. This is the
+-- registry's intended mint authority, recorded here so the boundary is explicit.
+probeBurnMintHasNoConservationCheck : Script ()
+probeBurnMintHasNoConservationCheck = do
+  admin <- allocateParty "ProbeBMConsAdmin"
+  alice <- allocateParty "ProbeBMConsAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "PROBE-BM-CONS"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  res <- trySubmit (actAs admin <> actAs alice) do
+    exerciseCmd (asBurnMint factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId
+      inputHoldingCids = [coinCid]
+      outputs = [BurnMintOutput with owner = alice, amount = 1000.0, context = emptyExtraArgs.context]
+      extraActors = [alice]
+      extraArgs = emptyExtraArgs
+  case res of
+    Left err -> abort ("burn/mint unexpectedly rejected an inflating mint: " <> show err)
+    Right _ -> pure ()
+  supply <- supplyOf admin instrumentId
+  supply === 1000.0
+
+----------------------------------------------------------------------
+-- Direct creation of the value-bearing templates
+----------------------------------------------------------------------
+
+-- | A 'Coin' is @signatory instrumentId.admin, owner@ -- the attacker alone
+-- must not be able to create one for the honest admin's instrument.
+probeAttackerCannotCreateCoin : Script ()
+probeAttackerCannotCreateCoin = do
+  admin <- allocateParty "ProbeCoinAdmin"
+  mallory <- allocateParty "ProbeCoinMallory"
+  let instrumentId = InstrumentId with admin, id = "PROBE-COIN-DIRECT"
+  res <- trySubmit mallory do
+    createCmd Coin with instrumentId, owner = mallory, amount = 1000000.0
+  mustFailShowing "attacker creating a Coin of the honest admin's instrument" res
+  supply <- supplyOf admin instrumentId
+  supply === 0.0
+
+-- | 'CoinTransferInstruction' holds value directly (accept mints from it).
+-- The attacker alone must not be able to conjure one.
+probeAttackerCannotCreateTransferInstruction : Script ()
+probeAttackerCannotCreateTransferInstruction = do
+  admin <- allocateParty "ProbeInstrAdmin"
+  mallory <- allocateParty "ProbeInstrMallory"
+  let instrumentId = InstrumentId with admin, id = "PROBE-INSTR-DIRECT"
+  t0 <- getTime
+  res <- trySubmit mallory do
+    createCmd CoinTransferInstruction with
+      instrumentId, sender = mallory, receiver = mallory, amount = 1000000.0
+      requestedAt = t0, executeBefore = t0 `addRelTime` hours 24
+  mustFailShowing "attacker creating a CoinTransferInstruction for the honest instrument" res
+  supply <- supplyOf admin instrumentId
+  supply === 0.0
+
+----------------------------------------------------------------------
+-- Rejection reasons for the debitInputs guards
+----------------------------------------------------------------------
+
+-- | Prints the actual guard that rejects each malformed input set, proving
+-- the earlier probes are not passing for an incidental reason (e.g. missing
+-- disclosure) rather than the intended check.
+probeShowDebitRejectionReasons : Script ()
+probeShowDebitRejectionReasons = do
+  admin <- allocateParty "ProbeReasonAdmin"
+  alice <- allocateParty "ProbeReasonAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrA = InstrumentId with admin, id = "PROBE-REASON-A"
+      instrB = InstrumentId with admin, id = "PROBE-REASON-B"
+  cA <- mintCoin factoryCid admin instrA alice 0.01
+  cB <- mintCoin factoryCid admin instrB alice 0.01
+  factoryDisc <- discloseFactory admin factoryCid
+  t0 <- getTime
+
+  let attempt label amount inputs = do
+        res <- trySubmit (actAs alice <> disclose factoryDisc) do
+          exerciseCmd (asTransferFactoryV1 factoryCid) TIV1.TransferFactory_Transfer with
+            expectedAdmin = admin
+            transfer = mkTransferV1 t0 alice alice amount instrA inputs
+            extraArgs = emptyExtraArgs
+        mustFailShowing label res
+
+  attempt "cross-instrument input" 0.01 [cB]
+  attempt "duplicate input cid" 0.02 [cA, cA]
+  attempt "insufficient coverage" 0.05 [cA]
+  attempt "no inputs at all" 0.01 []
+
+  supply <- supplyOf admin instrA
+  supply === 0.01
