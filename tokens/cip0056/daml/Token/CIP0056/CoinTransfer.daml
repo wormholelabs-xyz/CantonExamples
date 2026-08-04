@@ -62,6 +62,7 @@ template CoinTransferInstruction
   where
     signatory instrumentId.admin, sender
     observer receiver
+    ensure amount > 0.0 && requestedAt < executeBefore
 
     interface instance TIV1.TransferInstruction for CoinTransferInstruction where
       view = TIV1.TransferInstructionView with

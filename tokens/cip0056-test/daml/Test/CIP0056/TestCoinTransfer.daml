@@ -304,3 +304,25 @@ testCoinTransferAcceptRejectedAfterExecuteBefore = do
       c.owner === alice
       c.amount === 0.006
     other -> abort ("expected one returned coin, got: " <> show other)
+
+-- | Template-level invariants: even the signatories acting together cannot
+-- create a 'CoinTransferInstruction' with a non-positive amount or an
+-- execution window that closes at or before @requestedAt@.
+testCoinTransferInstructionTemplateRejectsInvalidFields : Script ()
+testCoinTransferInstructionTemplateRejectsInvalidFields = do
+  admin <- allocateParty "TransferEnsureAdmin"
+  alice <- allocateParty "TransferEnsureAlice"
+  bob <- allocateParty "TransferEnsureBob"
+  let instrumentId = InstrumentId with admin, id = "COIN-ENSURE-V1"
+  t0 <- getTime
+  let mkInstr amount executeBefore = CoinTransferInstruction with
+        instrumentId, sender = alice, receiver = bob, amount
+        requestedAt = t0, executeBefore
+  submitMustFail (actAs admin <> actAs alice) do
+    createCmd (mkInstr (-0.01) (t0 `addRelTime` hours 1))
+  submitMustFail (actAs admin <> actAs alice) do
+    createCmd (mkInstr 0.01 t0)
+  -- Sanity: the signatories can still create a well-formed instruction directly.
+  _ <- submit (actAs admin <> actAs alice) do
+    createCmd (mkInstr 0.01 (t0 `addRelTime` hours 1))
+  pure ()
