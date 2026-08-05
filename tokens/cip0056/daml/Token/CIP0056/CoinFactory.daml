@@ -12,7 +12,7 @@ import Splice.Api.Token.BurnMintV1
   ( BurnMintFactory, BurnMintFactoryView (..)
   , BurnMintFactory_BurnMintResult (..)
   )
-import Splice.Api.Token.HoldingV1 (Holding, InstrumentId (..))
+import Splice.Api.Token.HoldingV1 (Holding)
 import Splice.Api.Token.MetadataV1 (emptyMetadata)
 import Splice.Api.Token.TransferInstructionV1 qualified as TIV1
 import Token.CIP0056.Coin
@@ -93,7 +93,12 @@ template CoinFactory
           (arg.expectedAdmin == admin)
         assertMsg "cip0056: allocation amount must be positive" (leg.amount > 0.0)
         now <- getTime
+        assertMsg "cip0056: allocation requestedAt must not be in the future" (arg.requestedAt <= now)
+        assertMsg "cip0056: allocation.settlement.requestedAt must not be in the future"
+          (spec.settlement.requestedAt <= now)
         assertMsg "cip0056: allocation window (allocateBefore) has passed" (now < spec.settlement.allocateBefore)
+        assertMsg "cip0056: allocation.settlement.allocateBefore must not be after settleBefore"
+          (spec.settlement.allocateBefore <= spec.settlement.settleBefore)
         senderChangeCids <-
           debitInputs "allocation" leg.instrumentId leg.sender leg.amount arg.inputHoldingCids
         allocationCid <- toInterfaceContractId @Allocation <$> create CoinAllocation with

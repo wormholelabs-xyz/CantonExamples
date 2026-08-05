@@ -40,19 +40,26 @@ mkAllocationSpec requestedAt executor sender receiver amount instrumentId =
     transferLegId = "leg-0"
     transferLeg = TransferLeg with sender, receiver, amount, instrumentId, meta = emptyMetadata
 
-tryAllocate
-  : ContractId CoinFactory -> Party -> AllocationSpecification -> [ContractId Holding]
+-- | Like 'tryAllocate', but with an explicit instruction-level @requestedAt@.
+tryAllocateAt
+  : Time -> ContractId CoinFactory -> Party -> AllocationSpecification -> [ContractId Holding]
   -> Script (Either SubmitError AllocationInstructionResult)
-tryAllocate factoryCid admin spec inputHoldingCids = do
+tryAllocateAt requestedAt factoryCid admin spec inputHoldingCids = do
   factoryDisc <- discloseFactory admin factoryCid
-  t0 <- getTime
   trySubmit (actAs spec.transferLeg.sender <> disclose factoryDisc) do
     exerciseCmd (asAllocationFactory factoryCid) AllocationFactory_Allocate with
       expectedAdmin = admin
       allocation = spec
-      requestedAt = t0
+      requestedAt
       inputHoldingCids
       extraArgs = emptyExtraArgs
+
+tryAllocate
+  : ContractId CoinFactory -> Party -> AllocationSpecification -> [ContractId Holding]
+  -> Script (Either SubmitError AllocationInstructionResult)
+tryAllocate factoryCid admin spec inputHoldingCids = do
+  t0 <- getTime
+  tryAllocateAt t0 factoryCid admin spec inputHoldingCids
 
 allocate
   : ContractId CoinFactory -> Party -> AllocationSpecification -> [ContractId Holding]
@@ -208,6 +215,77 @@ testCoinAllocateV1RejectsNegativeAmount = do
   t0 <- getTime
   res <- tryAllocate factoryCid admin (mkAllocationSpec t0 carol alice bob (-0.01) instrumentId) []
   expectAbort "allocation amount must be positive" res
+
+----------------------------------------------------------------------
+-- Allocate-time specification validation
+----------------------------------------------------------------------
+
+-- | @allocateBefore > settleBefore@ describes an allocation that can never be
+-- settled; the factory must refuse to create it.
+testCoinAllocateRejectsInvertedSettlementWindow : Script ()
+testCoinAllocateRejectsInvertedSettlementWindow = do
+  admin <- allocateParty "AllocInvertedAdmin"
+  alice <- allocateParty "AllocInvertedAlice"
+  bob <- allocateParty "AllocInvertedBob"
+  carol <- allocateParty "AllocInvertedCarolExecutor"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-ALLOC-INVERTED"
+  t0 <- getTime
+  -- allocateBefore = t0 + 1h (still open), settleBefore = t0: inverted.
+  let base = mkAllocationSpec t0 carol alice bob 0.006 instrumentId
+      spec = base with settlement = base.settlement with settleBefore = t0
+  res <- tryAllocate factoryCid admin spec []
+  expectAbort "allocateBefore must not be after settleBefore" res
+
+testCoinAllocateRejectsFutureSettlementRequestedAt : Script ()
+testCoinAllocateRejectsFutureSettlementRequestedAt = do
+  admin <- allocateParty "AllocFutureSettleReqAdmin"
+  alice <- allocateParty "AllocFutureSettleReqAlice"
+  bob <- allocateParty "AllocFutureSettleReqBob"
+  carol <- allocateParty "AllocFutureSettleReqCarolExecutor"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-ALLOC-FUTURE-SETTLE-REQ"
+  t0 <- getTime
+  -- settlement.requestedAt one hour in the future; window bounds stay valid.
+  let spec = mkAllocationSpec (t0 `addRelTime` hours 1) carol alice bob 0.006 instrumentId
+  res <- tryAllocate factoryCid admin spec []
+  expectAbort "settlement.requestedAt must not be in the future" res
+
+testCoinAllocateRejectsFutureInstructionRequestedAt : Script ()
+testCoinAllocateRejectsFutureInstructionRequestedAt = do
+  admin <- allocateParty "AllocFutureInstrReqAdmin"
+  alice <- allocateParty "AllocFutureInstrReqAlice"
+  bob <- allocateParty "AllocFutureInstrReqBob"
+  carol <- allocateParty "AllocFutureInstrReqCarolExecutor"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-ALLOC-FUTURE-INSTR-REQ"
+  t0 <- getTime
+  let spec = mkAllocationSpec t0 carol alice bob 0.006 instrumentId
+  res <- tryAllocateAt (t0 `addRelTime` hours 1) factoryCid admin spec []
+  expectAbort "allocation requestedAt must not be in the future" res
+
+-- | Template-level invariants: even the signatories acting together cannot
+-- create a 'CoinAllocation' with a non-positive amount or an inverted
+-- settlement window, bypassing the factory.
+testCoinAllocationTemplateRejectsInvalidSpecs : Script ()
+testCoinAllocationTemplateRejectsInvalidSpecs = do
+  admin <- allocateParty "AllocEnsureAdmin"
+  alice <- allocateParty "AllocEnsureAlice"
+  bob <- allocateParty "AllocEnsureBob"
+  carol <- allocateParty "AllocEnsureCarolExecutor"
+  let instrumentId = InstrumentId with admin, id = "COIN-ALLOC-ENSURE"
+  t0 <- getTime
+  let base = mkAllocationSpec t0 carol alice bob 0.006 instrumentId
+  submitMustFail (actAs admin <> actAs alice) do
+    createCmd CoinAllocation with
+      allocation = base with transferLeg = base.transferLeg with amount = -0.006
+  submitMustFail (actAs admin <> actAs alice) do
+    createCmd CoinAllocation with
+      allocation = base with settlement = base.settlement with settleBefore = t0
+  -- Sanity: the signatories can still create a well-formed allocation directly.
+  _ <- submit (actAs admin <> actAs alice) do
+    createCmd CoinAllocation with allocation = base
+  pure ()
 
 ----------------------------------------------------------------------
 -- Deadline enforcement -- allocateBefore / settleBefore
