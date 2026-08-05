@@ -1,0 +1,304 @@
+-- | The genesis 'CoinFactory': a 'BurnMintFactory' plus
+-- 'TransferFactory'/'AllocationFactory' v1+v2 and 'AV2.SettlementFactory'.
+-- Signatory admin alone, created once and never replaced;
+-- instrumentId.admin must always equal admin.
+module Token.CIP0112.CoinFactory where
+
+import DA.Foldable (forA_)
+import DA.List (dedup)
+import DA.Optional (fromOptional)
+import DA.TextMap qualified as TextMap
+
+import Splice.Api.Token.AllocationInstructionV1
+import Splice.Api.Token.AllocationInstructionV2 qualified as AIV2
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.AllocationV2 qualified as AV2
+import Splice.Api.Token.BurnMintV1
+  ( BurnMintFactory, BurnMintFactoryView (..)
+  , BurnMintFactory_BurnMintResult (..)
+  )
+import Splice.Api.Token.HoldingV1 (Holding, InstrumentId (..))
+import Splice.Api.Token.HoldingV2 qualified as HoldingV2
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Splice.Api.Token.TransferInstructionV1 qualified as TIV1
+import Splice.Api.Token.TransferInstructionV2 qualified as TIV2
+import Token.CIP0112.Coin
+import Token.CIP0112.CoinAllocation
+import Token.CIP0112.CoinAllocationV2
+import Token.CIP0112.CoinTransfer
+
+-- | One authorized leg side, flattened across allocations, for SettleBatch's
+-- per-leg matching.
+data LegSideEntry = LegSideEntry with
+  transferLegId : Text
+  side          : AV2.TransferSide
+  authorizer    : HoldingV2.Account
+  otherside     : HoldingV2.Account
+  amount        : Decimal
+  instrumentId  : Text
+
+template CoinFactory
+  with
+    admin : Party
+  where
+    signatory admin
+
+    interface instance BurnMintFactory for CoinFactory where
+      view = BurnMintFactoryView with admin = admin, meta = emptyMetadata
+
+      burnMintFactory_burnMintImpl _self arg = do
+        assertMsg "cip0112: CoinFactory only serves instruments administered by admin"
+          (arg.instrumentId.admin == admin)
+        assertMsg "cip0112: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        forA_ arg.inputHoldingCids \cid -> do
+          r <- fetchFromInterface @Coin cid
+          case r of
+            None -> abort "cip0112: burn input is not a Coin issued by this registry"
+            Some (_, coin) ->
+              assertMsg "cip0112: burn input's instrument does not match the requested instrumentId"
+                (coin.instrumentId == arg.instrumentId)
+          archive cid
+        -- BurnMintFactory is party-based; mint/burn stays basic-account-only.
+        outputCids <- forA arg.outputs \o ->
+          toInterfaceContractId @Holding <$> createCoinIn arg.instrumentId (basicAccountV2 o.owner) o.amount
+        pure BurnMintFactory_BurnMintResult with outputCids
+
+      burnMintFactory_publicFetchImpl _self arg = do
+        assertMsg "cip0112: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        pure BurnMintFactoryView with admin = admin, meta = emptyMetadata
+
+    interface instance TIV1.TransferFactory for CoinFactory where
+      view = TIV1.TransferFactoryView with admin = admin, meta = emptyMetadata
+
+      transferFactory_transferImpl _self arg = do
+        assertMsg "cip0112: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        let t = arg.transfer
+        assertTransferWindow t.requestedAt t.executeBefore
+        -- v1 is inherently basic (bare party, no account model); lift
+        -- sender/receiver into basic accounts for the shared account-based core.
+        let senderAccount = basicAccountV2 t.sender
+            receiverAccount = basicAccountV2 t.receiver
+        outcome <- transferCore admin (t.sender == t.receiver)
+          senderAccount receiverAccount t.amount t.instrumentId t.inputHoldingCids arg.extraArgs
+        case outcome of
+          CoreCompleted{receiverCid, senderChangeCids} ->
+            pure TIV1.TransferInstructionResult with
+              output = TIV1.TransferInstructionResult_Completed with receiverHoldingCids = [receiverCid]
+              senderChangeCids
+              meta = emptyMetadata
+          CorePendingNeeded{senderChangeCids} -> do
+            instructionCid <- create CoinTransferInstruction with
+              instrumentId = t.instrumentId, senderAccount, receiverAccount, amount = t.amount
+              requestedAt = t.requestedAt, executeBefore = t.executeBefore
+            pure TIV1.TransferInstructionResult with
+              output = TIV1.TransferInstructionResult_Pending with
+                transferInstructionCid = toInterfaceContractId instructionCid
+              senderChangeCids
+              meta = emptyMetadata
+
+      transferFactory_publicFetchImpl _self arg = do
+        assertMsg "cip0112: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        pure TIV1.TransferFactoryView with admin = admin, meta = emptyMetadata
+
+    interface instance TIV2.TransferFactory for CoinFactory where
+      view = TIV2.TransferFactoryView with admin = admin, meta = emptyMetadata
+
+      transferFactory_transferExtraObservers _ = []
+
+      transferFactory_transferImpl _self arg = do
+        let t = arg.transfer
+        assertTransferWindow t.requestedAt t.executeBefore
+        -- Only the null-owner account is rejected; sub-accounts and
+        -- provider-delegated accounts are valid on both sides.
+        _ <- requireAccountOwner t.sender
+        _ <- requireAccountOwner t.receiver
+        assertMsg "cip0112: TransferFactory_Transfer requires the sender account's owner and provider authority"
+          (all (`elem` arg.actors) (accountControlParties t.sender))
+        let instrumentId = InstrumentId with admin = t.instrumentId.admin, id = t.instrumentId.id
+            inputHoldingCids = map coerceContractId t.inputHoldingCids
+            receiverAuthorityPresent = all (`elem` arg.actors) (accountControlParties t.receiver)
+        outcome <- transferCore admin receiverAuthorityPresent
+          t.sender t.receiver t.amount instrumentId inputHoldingCids arg.extraArgs
+        case outcome of
+          CoreCompleted{receiverCid, senderChangeCids} ->
+            pure TIV2.TransferInstructionResult with
+              output = TIV2.TransferInstructionResult_Completed with
+                receiverHoldingCids = [coerceContractId receiverCid]
+              senderChangeCids = map coerceContractId senderChangeCids
+              meta = emptyMetadata
+          CorePendingNeeded{senderChangeCids} -> do
+            instructionCid <- create CoinTransferInstruction with
+              instrumentId, senderAccount = t.sender, receiverAccount = t.receiver, amount = t.amount
+              requestedAt = t.requestedAt, executeBefore = t.executeBefore
+            pure TIV2.TransferInstructionResult with
+              output = TIV2.TransferInstructionResult_Pending with
+                transferInstructionCid = toInterfaceContractId instructionCid
+              senderChangeCids = map coerceContractId senderChangeCids
+              meta = emptyMetadata
+
+      transferFactory_publicFetchImpl _self _arg =
+        pure TIV2.TransferFactoryView with admin = admin, meta = emptyMetadata
+
+    interface instance AllocationFactory for CoinFactory where
+      view = AllocationFactoryView with admin = admin, meta = emptyMetadata
+
+      allocationFactory_allocateImpl _self arg = do
+        let spec = arg.allocation
+            leg = spec.transferLeg
+        assertMsg "cip0112: CoinFactory only serves instruments administered by admin"
+          (leg.instrumentId.admin == admin)
+        assertMsg "cip0112: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        assertMsg "cip0112: allocation amount must be positive" (leg.amount > 0.0)
+        now <- getTime
+        assertMsg "cip0112: allocation window (allocateBefore) has passed" (now < spec.settlement.allocateBefore)
+        -- v1 allocations are party-based, not account-based; basic by construction.
+        senderChangeCids <-
+          debitInputs "allocation" leg.instrumentId (basicAccountV2 leg.sender) leg.amount arg.inputHoldingCids
+        allocationCid <- toInterfaceContractId @Allocation <$> create CoinAllocation with
+          instrumentId = leg.instrumentId, allocation = spec
+        pure AllocationInstructionResult with
+          output = AllocationInstructionResult_Completed with allocationCid
+          senderChangeCids
+          meta = emptyMetadata
+
+      allocationFactory_publicFetchImpl _self arg = do
+        assertMsg "cip0112: expectedAdmin does not match this factory's admin"
+          (arg.expectedAdmin == admin)
+        pure AllocationFactoryView with admin = admin, meta = emptyMetadata
+
+    interface instance AIV2.AllocationFactory for CoinFactory where
+      view = AIV2.AllocationFactoryView with admin = admin, meta = emptyMetadata
+
+      allocationFactory_allocateExtraObservers _ = []
+
+      allocationFactory_allocateImpl _self arg = do
+        let spec = arg.allocation
+        assertMsg "cip0112: allocation's admin does not match this factory's admin"
+          (spec.admin == admin)
+        -- Only the null-owner account is rejected; the authorizer's owner
+        -- AND provider must both authorize the allocate.
+        _ <- requireAccountOwner spec.authorizer
+        assertMsg "cip0112: AllocationFactory_Allocate requires the authorizer account's owner and provider authority"
+          (all (`elem` arg.actors) (accountControlParties spec.authorizer))
+        assertMsg "cip0112: transferLegSides amounts must be positive"
+          (all (> 0.0) (map (.amount) spec.transferLegSides))
+        assertMsg "cip0112: nextIterationFunding amounts must be positive"
+          (all ((> 0.0) . snd) (TextMap.toList (fromOptional TextMap.empty spec.nextIterationFunding)))
+
+        now <- getTime
+        let round1Totals = sumSide AV2.SenderSide spec.transferLegSides
+            reserveTotals = fromOptional TextMap.empty spec.nextIterationFunding
+            requiredTotals = textMapUnionWith (+) round1Totals reserveTotals
+
+        inputCoins <- forA arg.inputHoldingCids \cid -> do
+          r <- fetchFromInterface @Coin cid
+          case r of
+            None -> abort "cip0112: allocation input is not a Coin issued by this registry"
+            Some (_, coin) -> do
+              assertMsg "cip0112: allocation input not owned by the authorizer" (coinAccountOf coin == spec.authorizer)
+              assertMsg "cip0112: allocation input's instrument admin does not match this factory's admin"
+                (coin.instrumentId.admin == admin)
+              pure coin
+        forA_ arg.inputHoldingCids archive
+        let inputsByInstrument = TextMap.fromListWithR (+) [(c.instrumentId.id, c.amount) | c <- inputCoins]
+            instruments = dedup (map fst (TextMap.toList requiredTotals) ++ map fst (TextMap.toList inputsByInstrument))
+
+        results <- forA instruments \instr -> do
+          let have = fromOptional 0.0 (TextMap.lookup instr inputsByInstrument)
+              need = fromOptional 0.0 (TextMap.lookup instr requiredTotals)
+          assertMsg ("cip0112: input holdings for " <> instr <> " do not cover the allocation's required funding")
+            (have >= need)
+          let change = have - need
+          changeCids <-
+            if change > 0.0
+              then do
+                cid <- toInterfaceContractId @HoldingV2.Holding <$>
+                  createCoinIn (InstrumentId with admin = admin, id = instr) spec.authorizer change
+                pure [cid]
+              else pure []
+          pure (instr, need, changeCids)
+
+        allocationCid <- toInterfaceContractId @AV2.Allocation <$> create CoinAllocationV2 with
+          authorizerAccount = spec.authorizer
+          settlement = arg.settlement
+          allocation = spec
+          lockedAmounts = TextMap.filter (> 0.0) (TextMap.fromList [(i, n) | (i, n, _) <- results])
+          originalAllocationCid = None
+          createdAt = now
+          numIterations = 0
+
+        pure AIV2.AllocationInstructionResult with
+          output = AIV2.AllocationInstructionResult_Completed with allocationCid
+          authorizerChangeCids = TextMap.fromList [(i, cs) | (i, _, cs) <- results, not (null cs)]
+          meta = emptyMetadata
+
+      allocationFactory_publicFetchImpl _self _arg =
+        pure AIV2.AllocationFactoryView with admin = admin, meta = emptyMetadata
+
+    interface instance AV2.SettlementFactory for CoinFactory where
+      view = AV2.SettlementFactoryView with admin = admin, meta = emptyMetadata
+
+      settlementFactory_settleBatchExtraObservers _ = []
+
+      settlementFactory_settleBatchImpl _self arg = do
+        assertMsg "cip0112: SettlementFactory_SettleBatch requires at least one transfer leg"
+          (not (null arg.transferLegs))
+        assertMsg "cip0112: SettlementFactory_SettleBatch requires actors to be exactly settlement.executors"
+          (sameGroup arg.actors arg.settlement.executors)
+        assertMsg "cip0112: duplicate transferLegId in transferLegs"
+          (length (dedup (map (.transferLegId) arg.transferLegs)) == length arg.transferLegs)
+
+        -- The nested Allocation_Settle makes admin a controller, so the target must be our own CoinAllocationV2.
+        allocViews <- forA arg.allocations \fa -> do
+          r <- fetchFromInterface @CoinAllocationV2 fa.allocationCid
+          case r of
+            None -> abort "cip0112: allocation is not a CoinAllocationV2 issued by this registry"
+            Some (_, av) -> do
+              assertMsg "cip0112: allocation's admin does not match this factory's admin"
+                (av.allocation.admin == admin)
+              assertMsg "cip0112: allocation was not created for this settlement" (av.settlement == arg.settlement)
+              pure (fa, av)
+
+        let entries =
+              [ LegSideEntry with
+                  transferLegId = s.transferLegId, side = s.side
+                  authorizer = av.allocation.authorizer, otherside = s.otherside
+                  amount = s.amount, instrumentId = s.instrumentId
+              | (fa, av) <- allocViews, s <- av.allocation.transferLegSides ++ fa.extraTransferLegSides
+              ]
+
+        forA_ arg.transferLegs \leg -> do
+          let mine = [e | e <- entries, e.transferLegId == leg.transferLegId]
+              senders = [e | e <- mine, e.side == AV2.SenderSide]
+              receivers = [e | e <- mine, e.side == AV2.ReceiverSide]
+              legErr what = "cip0112: transferLeg " <> leg.transferLegId <> " " <> what
+          assertMsg (legErr "has no matching SenderSide allocation") (length senders == 1)
+          assertMsg (legErr "has no matching ReceiverSide allocation") (length receivers == 1)
+          let [s] = senders
+              [r] = receivers
+          assertMsg (legErr "SenderSide authorization mismatch")
+            (s.authorizer == leg.sender && s.otherside == leg.receiver
+              && s.amount == leg.amount && s.instrumentId == leg.instrumentId)
+          assertMsg (legErr "ReceiverSide authorization mismatch")
+            (r.authorizer == leg.receiver && r.otherside == leg.sender
+              && r.amount == leg.amount && r.instrumentId == leg.instrumentId)
+
+        assertMsg "cip0112: allocations authorize transfer leg sides not covered by the given transferLegs"
+          (length entries == 2 * length arg.transferLegs)
+
+        allocationSettleResults <- forA allocViews \(fa, _) ->
+          exercise fa.allocationCid AV2.Allocation_Settle with
+            actors = admin :: arg.settlement.executors
+            extraTransferLegSides = fa.extraTransferLegSides
+            nextIterationFunding = fa.nextIterationFunding
+            extraArgs = withSettleBatchContext arg.extraArgs
+
+        pure AV2.SettlementFactory_SettleBatchResult with allocationSettleResults, meta = emptyMetadata
+
+      settlementFactory_publicFetchImpl _self _arg =
+        pure AV2.SettlementFactoryView with admin = admin, meta = emptyMetadata

@@ -1,0 +1,203 @@
+-- | Daml Script tests for 'Token.CIP0112.Coin': the singleton, admin-owned
+-- 'CoinFactory' and its paired 'Coin' holding.
+--
+-- 'CoinFactory' is a multi-tenant singleton -- one contract instance
+-- administers every instrument its admin owns -- so these tests pin down
+-- @expectedAdmin@ validation, cross-instrument burn isolation, and one
+-- factory serving several independent instruments end to end.
+module Test.CIP0112.TestCoin where
+
+import Daml.Script
+import DA.Assert ((===))
+
+import Splice.Api.Token.HoldingV1 (InstrumentId(..), Holding)
+import Splice.Api.Token.BurnMintV1
+  (BurnMintFactory_BurnMint(..), BurnMintFactory_PublicFetch(..), BurnMintOutput(..))
+import Token.CIP0112.Coin
+import Token.CIP0112.CoinFactory ()
+import Test.CIP0112.TestUtils (coinFactorySetup, asBurnMintFactory, mintCoin, emptyExtraArgs, expectAbort)
+
+----------------------------------------------------------------------
+-- Genesis
+----------------------------------------------------------------------
+
+testCoinFactoryGenesis : Script ()
+testCoinFactoryGenesis = do
+  admin <- allocateParty "CoinGenesisAdmin"
+  factoryCid <- coinFactorySetup admin
+  Some factory <- queryContractId admin factoryCid
+  factory.admin === admin
+
+testCoinFactoryPublicFetch : Script ()
+testCoinFactoryPublicFetch = do
+  admin <- allocateParty "CoinFetchAdmin"
+  rogue <- allocateParty "CoinFetchRogue"
+  factoryCid <- coinFactorySetup admin
+  view <- submit admin do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_PublicFetch with
+      expectedAdmin = admin
+      actor = admin
+  view.admin === admin
+
+  submitMustFail admin do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_PublicFetch with
+      expectedAdmin = rogue
+      actor = admin
+
+----------------------------------------------------------------------
+-- Mint / burn mechanics
+----------------------------------------------------------------------
+
+testCoinMintEmptyInputsOneOutput : Script ()
+testCoinMintEmptyInputsOneOutput = do
+  admin <- allocateParty "CoinMintAdmin"
+  alice <- allocateParty "CoinMintAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-MINT"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+  Some coin <- queryContractId admin (coerceContractId @Holding @Coin coinCid)
+  coin.owner === alice
+  coin.instrumentId === instrumentId
+  coin.amount === 0.01
+
+testCoinBurnOneInputWithChange : Script ()
+testCoinBurnOneInputWithChange = do
+  admin <- allocateParty "CoinBurnChangeAdmin"
+  alice <- allocateParty "CoinBurnChangeAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-BURN-CHANGE"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+
+  res <- submit (actAs admin <> actAs alice) do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId
+      inputHoldingCids = [coinCid]
+      outputs = [BurnMintOutput with owner = alice, amount = 0.004, context = emptyExtraArgs.context]
+      extraActors = [alice]
+      extraArgs = emptyExtraArgs
+
+  archived <- queryContractId admin (coerceContractId @Holding @Coin coinCid)
+  archived === None
+  case res.outputCids of
+    [changeCid] -> do
+      Some change <- queryContractId admin (coerceContractId @Holding @Coin changeCid)
+      change.amount === 0.004
+    _ -> abort ("expected exactly one change coin, got: " <> show res.outputCids)
+
+testCoinBurnOneInputZeroChange : Script ()
+testCoinBurnOneInputZeroChange = do
+  admin <- allocateParty "CoinBurnExactAdmin"
+  alice <- allocateParty "CoinBurnExactAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-BURN-EXACT"
+  coinCid <- mintCoin factoryCid admin instrumentId alice 0.01
+
+  res <- submit (actAs admin <> actAs alice) do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId
+      inputHoldingCids = [coinCid]
+      outputs = []
+      extraActors = [alice]
+      extraArgs = emptyExtraArgs
+
+  res.outputCids === []
+  archived <- queryContractId admin (coerceContractId @Holding @Coin coinCid)
+  archived === None
+
+testBurnMintRejectsZeroAmountOutput : Script ()
+testBurnMintRejectsZeroAmountOutput = do
+  admin <- allocateParty "CoinZeroOutputAdmin"
+  alice <- allocateParty "CoinZeroOutputAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin, id = "COIN-ZERO-OUTPUT"
+
+  res <- trySubmit (actAs admin <> actAs alice) do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId
+      inputHoldingCids = []
+      outputs = [BurnMintOutput with owner = alice, amount = 0.0, context = emptyExtraArgs.context]
+      extraActors = [alice]
+      extraArgs = emptyExtraArgs
+  expectAbort "Coin" res
+
+----------------------------------------------------------------------
+-- Defensive checks specific to a multi-tenant factory
+----------------------------------------------------------------------
+
+testCoinRejectsMismatchedAdminInstrument : Script ()
+testCoinRejectsMismatchedAdminInstrument = do
+  admin <- allocateParty "CoinMismatchAdmin"
+  notAdmin <- allocateParty "CoinMismatchNotAdmin"
+  alice <- allocateParty "CoinMismatchAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentId = InstrumentId with admin = notAdmin, id = "COIN-MISMATCH"
+
+  res <- trySubmit (actAs admin <> actAs notAdmin <> actAs alice) do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId
+      inputHoldingCids = []
+      outputs = [BurnMintOutput with owner = alice, amount = 0.01, context = emptyExtraArgs.context]
+      extraActors = [alice]
+      extraArgs = emptyExtraArgs
+  expectAbort "only serves instruments administered by admin" res
+
+testCoinRejectsCrossInstrumentBurn : Script ()
+testCoinRejectsCrossInstrumentBurn = do
+  admin <- allocateParty "CoinCrossAdmin"
+  alice <- allocateParty "CoinCrossAlice"
+  factoryCid <- coinFactorySetup admin
+  let instrumentA = InstrumentId with admin, id = "COIN-CROSS-A"
+      instrumentB = InstrumentId with admin, id = "COIN-CROSS-B"
+  coinCid <- mintCoin factoryCid admin instrumentA alice 0.01
+
+  res <- trySubmit (actAs admin <> actAs alice) do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId = instrumentB
+      inputHoldingCids = [coinCid]
+      outputs = []
+      extraActors = [alice]
+      extraArgs = emptyExtraArgs
+  expectAbort "burn input's instrument does not match the requested instrumentId" res
+
+----------------------------------------------------------------------
+-- One singleton factory serving several instruments
+----------------------------------------------------------------------
+
+-- | The canonical multi-tenancy claim, proved end to end: one 'CoinFactory'
+-- contract mints and burns for two unrelated instruments under the same
+-- admin, and a burn cannot cross from one instrument's coin into the
+-- other's ledger.
+testCoinFactoryServesTwoInstruments : Script ()
+testCoinFactoryServesTwoInstruments = do
+  admin <- allocateParty "CoinTwoInstrumentsAdmin"
+  alice <- allocateParty "CoinTwoInstrumentsAlice"
+  bob <- allocateParty "CoinTwoInstrumentsBob"
+  factoryCid <- coinFactorySetup admin
+  let instrumentA = InstrumentId with admin, id = "TOKEN-A"
+      instrumentB = InstrumentId with admin, id = "TOKEN-B"
+
+  coinA <- mintCoin factoryCid admin instrumentA alice 1.0
+  coinB <- mintCoin factoryCid admin instrumentB bob 2.0
+  Some a <- queryContractId admin (coerceContractId @Holding @Coin coinA)
+  Some b <- queryContractId admin (coerceContractId @Holding @Coin coinB)
+  a.owner === alice
+  a.amount === 1.0
+  b.owner === bob
+  b.amount === 2.0
+
+  -- The same factory contract serves both instruments, but a burn cannot
+  -- cross from A's coin into B's ledger.
+  res <- trySubmit (actAs admin <> actAs alice) do
+    exerciseCmd (asBurnMintFactory factoryCid) BurnMintFactory_BurnMint with
+      expectedAdmin = admin
+      instrumentId = instrumentB
+      inputHoldingCids = [coinA]
+      outputs = []
+      extraActors = [alice]
+      extraArgs = emptyExtraArgs
+  expectAbort "burn input's instrument does not match" res
