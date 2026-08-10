@@ -6,3 +6,4 @@
 
 # Task-planning notes for AI coding agents; never part of the committed docs.
 .claude/
+.vscode
