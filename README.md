@@ -13,11 +13,21 @@ cross-example runtime dependency.
 | --- | --- | --- |
 | `dars/` | -- | Vendored Splice Token Standard interface DARs (shared, committed binaries; see `dars/README.md` for provenance and sha256). |
 | `tokens/cip0056` + `tokens/cip0056-test` | present | Token Standard v1: a singleton, multi-instrument coin factory implementing `BurnMintFactory`, `TransferFactory`, and `AllocationFactory`. |
+| `tokens/cip0056-metadata-service` | present | The off-ledger half of that example: a TypeScript reference implementation of the `splice-api-token-metadata-v1` registry API, which is where wallets read an instrument's name, symbol, and decimals. Not a Daml package. |
 | `tokens/cip0112` + `tokens/cip0112-test` | planned | Token Standard v2: adds provider/account-holder fields to the coin, its own templates, its own vendored v2 DARs. Not yet extracted -- see "CIP0112 recipe" below. |
 
-`multi-package.yaml` at the repo root lists every package so `dpm build --all`
-builds them all in dependency order; each production/`-test` package pair is
-otherwise independent.
+`multi-package.yaml` at the repo root lists every Daml package so `dpm build
+--all` builds them all in dependency order; each production/`-test` package
+pair is otherwise independent. `tokens/cip0056-metadata-service` is not a Daml
+package and is absent from it.
+
+A conforming token is not only templates. `InstrumentId` is an opaque
+`(admin : Party, id : Text)` key, and the Token Standard puts display metadata
+-- name, symbol, decimals -- in an off-ledger API served by the instrument
+admin and discovered through scan / the app directory, not on the ledger.
+Canton Coin's ledger id is `"Amulet"`; the string "Canton Coin" comes from the
+DSO's scan app. `tokens/cip0056-metadata-service` is the reference
+implementation of that API for the `tokens/cip0056` example.
 
 ## Prerequisites
 

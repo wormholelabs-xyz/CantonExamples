@@ -6,4 +6,16 @@
 
 # Task-planning notes for AI coding agents; never part of the committed docs.
 .claude/
-.vscode
+
+# Editor config at any depth: shared project settings are tracked, personal
+# ones are not. The leading **/ matters -- a bare `.vscode/*` would anchor to
+# the repo root and leave a nested package's .vscode/ committable.
+**/.vscode/*
+!**/.vscode/settings.json
+!**/.vscode/extensions.json
+
+# bun.lock IS committed -- every install must resolve to the audited tree.
+node_modules/
+
+# Scratch output of `bun run codegen:check`, left behind only when it fails.
+tokens/cip0056-metadata-service/src/generated/token-metadata-v1.check.d.ts

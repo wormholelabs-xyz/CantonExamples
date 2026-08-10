@@ -1,0 +1,31 @@
+{
+  "adminId": "gg::12203c9b7f1e4a5d6c8b2f0e1d4a7c9b3e6f8a1d2c5b4e7f0a9c8b6d3e2f1a4b7c9d",
+  "supportedApis": {
+    "splice-api-token-metadata-v1": 1
+  },
+  "instruments": [
+    {
+      "id": "wormhole-ntt:9f2c1b8a4e6d0537c9a1f4b7e2d8c063a5b9e7f1d4c2a806b3e5f9c7d1a4b28e",
+      "name": "Wrapped ETH (Wormhole)",
+      "symbol": "WETH",
+      "decimals": 8
+    },
+    {
+      "id": "wormhole-ntt:3d7e9a2f5c1b8064e3a7d95f1c8b2069a4d7e3f5c9b1a806d2e4f7c3b5a9d1e60",
+      "name": "Wrapped USDC (Wormhole)",
+      "symbol": "WUSDC",
+      "decimals": 6
+    },
+    {
+      "id": "wormhole-ntt:5b8d1f3a7c9e2064b5d8f1a3c7e9024b6d8f1a3c5e7092b4d6f8a1c3e5079b2d",
+      "name": "Wrapped SOL (Wormhole)",
+      "symbol": "WSOL",
+      "decimals": 9,
+      "paused": true,
+      "pauseInfo": {
+        "reason": "guardian governance paused new transfers for this instrument",
+        "until": "2026-09-01T00:00:00Z"
+      }
+    }
+  ]
+}
