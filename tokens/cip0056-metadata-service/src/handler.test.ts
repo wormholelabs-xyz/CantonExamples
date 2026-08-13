@@ -13,14 +13,19 @@ const ADMIN_ID = "gg::1220aabbccdd";
 const BASE = "https://registry.example.com";
 const PREFIX = "/registry/metadata/v1";
 
+// Instruments from w7-registry, keyed by the underlying asset's Solana mint.
+const W_ID = "solana:85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ";
+const USDC_ID = "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SPCX_ID = "solana:SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb";
+
 // Deliberately not in sorted order: pagination must impose its own ordering.
 const INSTRUMENTS = [
-  { id: "wormhole-ntt:cc03", name: "Wrapped SOL (Wormhole)", symbol: "WSOL", decimals: 9 },
-  { id: "wormhole-ntt:aa01", name: "Wrapped ETH (Wormhole)", symbol: "WETH", decimals: 8 },
-  { id: "wormhole-ntt:bb02", name: "Wrapped USDC (Wormhole)", symbol: "WUSDC", decimals: 6 },
+  { id: SPCX_ID, name: "SpaceX", symbol: "SPCX", decimals: 6 },
+  { id: W_ID, name: "Wormhole", symbol: "W", decimals: 6 },
+  { id: USDC_ID, name: "USD Coin", symbol: "USDC", decimals: 6 },
 ];
 
-const SORTED_IDS = ["wormhole-ntt:aa01", "wormhole-ntt:bb02", "wormhole-ntt:cc03"];
+const SORTED_IDS = [W_ID, USDC_ID, SPCX_ID];
 
 function harness(instruments: unknown[] = INSTRUMENTS) {
   const config = parseConfig({ adminId: ADMIN_ID, instruments });
@@ -45,15 +50,15 @@ describe("GET /registry/metadata/v1/info", () => {
 
 describe("GET /registry/metadata/v1/instruments/{instrumentId}", () => {
   test("serves every field the standard requires", async () => {
-    const res = await get(harness(), `${PREFIX}/instruments/wormhole-ntt:aa01`);
+    const res = await get(harness(), `${PREFIX}/instruments/${W_ID}`);
     expect(res.status).toBe(200);
 
     const body = await readJson(res);
     expect(body).toMatchObject({
-      id: "wormhole-ntt:aa01",
-      name: "Wrapped ETH (Wormhole)",
-      symbol: "WETH",
-      decimals: 8,
+      id: W_ID,
+      name: "Wormhole",
+      symbol: "W",
+      decimals: 6,
     });
     expect(typeof body.decimals).toBe("number");
     expect(body.decimals).toBeGreaterThanOrEqual(0);
@@ -65,15 +70,15 @@ describe("GET /registry/metadata/v1/instruments/{instrumentId}", () => {
   // clients will percent-encode. Both have to resolve to the same instrument.
   test("resolves a percent-encoded id identically to a raw one", async () => {
     const handler = harness();
-    const raw = await get(handler, `${PREFIX}/instruments/wormhole-ntt:aa01`);
-    const encoded = await get(handler, `${PREFIX}/instruments/wormhole-ntt%3Aaa01`);
+    const raw = await get(handler, `${PREFIX}/instruments/${W_ID}`);
+    const encoded = await get(handler, `${PREFIX}/instruments/${encodeURIComponent(W_ID)}`);
 
     expect(encoded.status).toBe(200);
     expect(await readJson(encoded)).toEqual(await readJson(raw));
   });
 
   test("404s an unknown instrument with exactly the spec's error shape", async () => {
-    const res = await get(harness(), `${PREFIX}/instruments/wormhole-ntt:nope`);
+    const res = await get(harness(), `${PREFIX}/instruments/solana:nope`);
     expect(res.status).toBe(404);
 
     const body = await readJson(res);
@@ -82,7 +87,7 @@ describe("GET /registry/metadata/v1/instruments/{instrumentId}", () => {
   });
 
   test("404s rather than mis-resolving an id containing an unencoded slash", async () => {
-    const res = await get(harness(), `${PREFIX}/instruments/wormhole-ntt:aa01/extra`);
+    const res = await get(harness(), `${PREFIX}/instruments/${W_ID}/extra`);
     expect(res.status).toBe(404);
   });
 
@@ -92,7 +97,7 @@ describe("GET /registry/metadata/v1/instruments/{instrumentId}", () => {
   });
 
   test("404s malformed percent-encoding rather than throwing", async () => {
-    const res = await get(harness(), `${PREFIX}/instruments/wormhole-ntt%zz`);
+    const res = await get(harness(), `${PREFIX}/instruments/solana%zz`);
     expect(res.status).toBe(404);
     expect(Object.keys(await readJson(res))).toEqual(["error"]);
   });
@@ -142,13 +147,13 @@ describe("GET /registry/metadata/v1/instruments", () => {
   });
 
   test("404s an unknown pageToken instead of silently restarting from the top", async () => {
-    const res = await get(harness(), `${PREFIX}/instruments?pageToken=wormhole-ntt:gone`);
+    const res = await get(harness(), `${PREFIX}/instruments?pageToken=solana:gone`);
     expect(res.status).toBe(404);
     expect(Object.keys(await readJson(res))).toEqual(["error"]);
   });
 
   test("a pageToken naming the final instrument yields an empty terminal page", async () => {
-    const res = await get(harness(), `${PREFIX}/instruments?pageToken=${encodeURIComponent("wormhole-ntt:cc03")}`);
+    const res = await get(harness(), `${PREFIX}/instruments?pageToken=${encodeURIComponent(SPCX_ID)}`);
     expect(res.status).toBe(200);
 
     const body = await readJson(res);
@@ -168,13 +173,13 @@ describe("pause state", () => {
     const pauseInfo = { reason: "guardian governance halt", until: "2026-09-01T00:00:00Z" };
     const handler = harness([{ ...INSTRUMENTS[0], paused: true, pauseInfo }]);
 
-    const body = await readJson(await get(handler, `${PREFIX}/instruments/wormhole-ntt:cc03`));
+    const body = await readJson(await get(handler, `${PREFIX}/instruments/${INSTRUMENTS[0]!.id}`));
     expect(body.paused).toBe(true);
     expect(body.pauseInfo).toEqual(pauseInfo);
   });
 
   test("an unpaused instrument still states paused: false explicitly", async () => {
-    const body = await readJson(await get(harness(), `${PREFIX}/instruments/wormhole-ntt:aa01`));
+    const body = await readJson(await get(harness(), `${PREFIX}/instruments/${W_ID}`));
     expect(body.paused).toBe(false);
     expect(body.pauseInfo).toBeUndefined();
   });
@@ -197,7 +202,7 @@ describe("browser and cache headers", () => {
   });
 
   test("does not tell caches to keep a 404", async () => {
-    const res = await get(harness(), `${PREFIX}/instruments/wormhole-ntt:nope`);
+    const res = await get(harness(), `${PREFIX}/instruments/solana:nope`);
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
 });
@@ -220,7 +225,7 @@ describe("a failing InstrumentSource", () => {
     });
   }
 
-  test.each([`${PREFIX}/instruments`, `${PREFIX}/instruments/wormhole-ntt:aa01`])(
+  test.each([`${PREFIX}/instruments`, `${PREFIX}/instruments/${W_ID}`])(
     "500s %s with the spec's error shape",
     async (path) => {
       const res = await get(brokenHarness(), path);
@@ -266,7 +271,7 @@ describe("routing", () => {
 
   test("HEAD keeps the status on an error path", async () => {
     const res = await harness()(
-      new Request(`${BASE}${PREFIX}/instruments/wormhole-ntt:nope`, { method: "HEAD" }),
+      new Request(`${BASE}${PREFIX}/instruments/solana:nope`, { method: "HEAD" }),
     );
     expect(res.status).toBe(404);
     expect(await res.text()).toBe("");

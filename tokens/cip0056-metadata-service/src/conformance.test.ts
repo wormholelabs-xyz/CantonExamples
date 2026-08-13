@@ -48,22 +48,27 @@ function assertValid(schemaName: string, body: unknown) {
 const BASE = "https://registry.example.com";
 const PREFIX = "/registry/metadata/v1";
 
+// Instruments from w7-registry, keyed by the underlying asset's Solana mint.
+const W_ID = "solana:85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ";
+const USDC_ID = "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SPCX_ID = "solana:SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb";
+
 // Exercises the widest instrument the config-backed source can produce (paused,
 // with pauseInfo and an override) alongside the narrowest (required keys only).
 const config = parseConfig({
   adminId: "gg::1220aabbccdd",
   instruments: [
-    { id: "wormhole-ntt:aa01", name: "Wrapped ETH (Wormhole)", symbol: "WETH", decimals: 8 },
+    { id: W_ID, name: "Wormhole", symbol: "W", decimals: 6 },
     {
-      id: "wormhole-ntt:bb02",
-      name: "Wrapped USDC (Wormhole)",
-      symbol: "WUSDC",
+      id: USDC_ID,
+      name: "USD Coin",
+      symbol: "USDC",
       decimals: 6,
       paused: true,
       pauseInfo: { reason: "guardian governance halt", until: "2026-09-01T00:00:00Z" },
       supportedApis: { "splice-api-token-metadata-v1": 1 },
     },
-    { id: "wormhole-ntt:cc03", name: "Zero-decimals token", symbol: "ZERO", decimals: 0 },
+    { id: SPCX_ID, name: "SpaceX", symbol: "SPCX", decimals: 6 },
   ],
 });
 const handler = createHandler({ config, source: configInstrumentSource(config) });
@@ -86,7 +91,7 @@ describe("responses validate against the vendored schemas", () => {
   });
 
   test("Instrument, for every instrument served", async () => {
-    for (const id of ["wormhole-ntt:aa01", "wormhole-ntt:bb02", "wormhole-ntt:cc03"]) {
+    for (const id of [W_ID, USDC_ID, SPCX_ID]) {
       assertValid("Instrument", await readJson(await get(`${PREFIX}/instruments/${encodeURIComponent(id)}`)));
     }
   });
@@ -103,8 +108,8 @@ describe("responses validate against the vendored schemas", () => {
 
   test("ErrorResponse, on each path that can 404", async () => {
     const bodies = await Promise.all([
-      readJson(await get(`${PREFIX}/instruments/wormhole-ntt:missing`)),
-      readJson(await get(`${PREFIX}/instruments?pageToken=wormhole-ntt:missing`)),
+      readJson(await get(`${PREFIX}/instruments/solana:missing`)),
+      readJson(await get(`${PREFIX}/instruments?pageToken=solana:missing`)),
       readJson(await get("/registry/metadata/v9/info")),
     ]);
     for (const body of bodies) assertValid("ErrorResponse", body);
@@ -141,7 +146,7 @@ describe("schema-level guarantees the spec states only in prose", () => {
       expect(undeclared("Instrument", instrument)).toEqual([]);
     }
 
-    const paused = await readJson(await get(`${PREFIX}/instruments/wormhole-ntt%3Abb02`));
+    const paused = await readJson(await get(`${PREFIX}/instruments/${encodeURIComponent(USDC_ID)}`));
     expect(undeclared("Instrument", paused)).toEqual([]);
     expect(undeclared("PauseInfo", paused.pauseInfo)).toEqual([]);
 

@@ -8,10 +8,10 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_INSTRUMENT_SUPPORTED_APIS, parseConfig } from "./config.ts";
 
 const instrument = {
-  id: "wormhole-ntt:deadbeef",
-  name: "Wrapped ETH (Wormhole)",
-  symbol: "WETH",
-  decimals: 8,
+  id: "solana:85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ",
+  name: "Wormhole",
+  symbol: "W",
+  decimals: 6,
 };
 
 const config = {
