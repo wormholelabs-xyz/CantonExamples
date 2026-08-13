@@ -4,9 +4,9 @@
 // socket and no test client: construct a Request, assert on the Response.
 import { describe, expect, test } from "bun:test";
 
-import { parseConfig } from "./config.ts";
-import { createHandler } from "./handler.ts";
-import { configInstrumentSource } from "./instruments.ts";
+import { parseConfig } from "../src/config.ts";
+import { createHandler } from "../src/handler.ts";
+import { configInstrumentSource } from "../src/instruments.ts";
 import { readJson } from "./testing.ts";
 
 const ADMIN_ID = "gg::1220aabbccdd";
@@ -263,17 +263,4 @@ describe("routing", () => {
     expect(Object.keys(await readJson(res))).toEqual(["error"]);
   });
 
-  test("HEAD is served like GET but without a body", async () => {
-    const res = await harness()(new Request(`${BASE}${PREFIX}/info`, { method: "HEAD" }));
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe("");
-  });
-
-  test("HEAD keeps the status on an error path", async () => {
-    const res = await harness()(
-      new Request(`${BASE}${PREFIX}/instruments/solana:nope`, { method: "HEAD" }),
-    );
-    expect(res.status).toBe(404);
-    expect(await res.text()).toBe("");
-  });
 });

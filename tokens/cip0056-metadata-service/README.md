@@ -29,8 +29,8 @@ One JSON file per deployment, validated on load; see
 `config/example.instruments.json`. Top level: `adminId`, and optionally
 `supportedApis` for `/info` (defaults to metadata-v1 only). Per instrument:
 `id`, `name`, `symbol`, `decimals` (0-10), and optionally `paused`, `pauseInfo`,
-`supportedApis`. Unknown keys, out-of-range decimals and duplicate ids are
-rejected rather than served.
+`supportedApis`. Unknown keys, out-of-range decimals, duplicate ids and
+`pauseInfo` without `paused: true` are rejected rather than served.
 
 An instrument's `supportedApis` defaults to what a CIP-0056 `CoinFactory`
 implements (metadata, holding, transfer-instruction, allocation,
@@ -45,6 +45,9 @@ from the DARs, not from the instrument.
   control.
 - **The API has no icon field.** Nothing to serve; icons come from wallet-side
   token lists.
+- **`pageSize` is clamped to [1, 100].** The spec declares no maximum and no
+  400 response, so out-of-range values are clamped to a usable page rather
+  than rejected.
 - **`totalSupply` is omitted.** A config file can't know it. Swap
   `InstrumentSource` (`src/instruments.ts`) for a ledger-backed one that sums
   the `Coin` ACS.
@@ -64,21 +67,19 @@ from the DARs, not from the instrument.
 `a89e03efe77285a6151a7d1c814e8f135b43038d9c4fd097d131bc58e4153f0c` -- the same
 release as the DARs in `/dars`, so the HTTP and Daml surfaces can't drift.
 
-It generates `src/generated/token-metadata-v1.d.ts` (`bun run codegen`,
-committed; `codegen:check` diffs it), and `src/conformance.test.ts` validates
-every response against it, so bumping the spec fails a test instead of drifting
-quietly.
+`test/conformance.test.ts` validates every response against the document
+itself, so bumping the spec fails a test instead of drifting quietly. The
+TypeScript response types are hand-written mirrors in `src/types.ts`, kept
+honest by that same suite.
 
 ## Dependencies
 
-`zod` at runtime (no transitive deps); `openapi-typescript`, `ajv`,
-`ajv-formats`, `yaml`, `typescript`, `@types/bun` for dev. Exact pins, `bun.lock`
-committed, so install with `--frozen-lockfile`.
+`zod` at runtime (no transitive deps); `ajv`, `ajv-formats`, `yaml`,
+`typescript`, `@types/bun` for dev. Exact pins, `bun.lock` committed, so
+install with `--frozen-lockfile`.
 
-Vetted 2026-08-10: all 42 resolved packages clean on OSV, `bun audit` clean.
-`hono` was the obvious routing choice and was dropped -- 47 advisories, two of
-them in the CORS middleware we'd have used, and three static GET routes don't
-justify tracking that. Note `openapi-typescript` requires
-`supports-color: ^10.2.2`, floored just above the shai-hulud-compromised
-`10.2.1`. Re-check with OSV per resolved version, not per package name, when
-bumping a pin.
+Vetted 2026-08-10 (re-audited 2026-08-13): all 13 resolved packages clean on
+OSV, `bun audit` clean. `hono` was the obvious routing choice and was dropped
+-- 47 advisories, two of them in the CORS middleware we'd have used, and three
+static GET routes don't justify tracking that. Re-check with OSV per resolved
+version, not per package name, when bumping a pin.

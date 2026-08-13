@@ -6,9 +6,9 @@
 // instrument this registry administers are declared here.
 import { z } from "zod";
 
-import type { components } from "./generated/token-metadata-v1.d.ts";
+import type { SupportedApis } from "./types.ts";
 
-export type SupportedApis = components["schemas"]["SupportedApis"];
+export type { SupportedApis };
 
 /**
  * The token standard APIs a CIP-0056 `CoinFactory` implements, all at minor
@@ -45,17 +45,29 @@ const pauseInfoSchema = z.strictObject({
   until: z.iso.datetime({ offset: true }).optional(),
 });
 
-const instrumentConfigSchema = z.strictObject({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  symbol: z.string().min(1),
-  decimals: z.number().int().min(0).max(MAX_DECIMALS),
-  // Advisory only: `tokens/cip0056` does not enforce a pause on-ledger. See
-  // this package's README.
-  paused: z.boolean().default(false),
-  pauseInfo: pauseInfoSchema.optional(),
-  supportedApis: supportedApisSchema.optional(),
-});
+const instrumentConfigSchema = z
+  .strictObject({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    symbol: z.string().min(1),
+    decimals: z.number().int().min(0).max(MAX_DECIMALS),
+    // Advisory only: `tokens/cip0056` does not enforce a pause on-ledger. See
+    // this package's README.
+    paused: z.boolean().default(false),
+    pauseInfo: pauseInfoSchema.optional(),
+    supportedApis: supportedApisSchema.optional(),
+  })
+  .check((ctx) => {
+    // Serving pauseInfo alongside paused: false would be incoherent metadata.
+    if (ctx.value.pauseInfo !== undefined && !ctx.value.paused) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value.pauseInfo,
+        path: ["pauseInfo"],
+        message: "pauseInfo requires paused: true",
+      });
+    }
+  });
 
 export const registryConfigSchema = z
   .strictObject({

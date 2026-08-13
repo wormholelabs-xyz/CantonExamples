@@ -5,7 +5,7 @@
 // rejections down.
 import { describe, expect, test } from "bun:test";
 
-import { DEFAULT_INSTRUMENT_SUPPORTED_APIS, parseConfig } from "./config.ts";
+import { DEFAULT_INSTRUMENT_SUPPORTED_APIS, parseConfig } from "../src/config.ts";
 
 const instrument = {
   id: "solana:85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ",
@@ -111,8 +111,20 @@ describe("pause state", () => {
 
   test("rejects an `until` that is not a timestamp", () => {
     expect(() =>
-      parseConfig({ ...config, instruments: [{ ...instrument, pauseInfo: { until: "next tuesday" } }] }),
+      parseConfig({
+        ...config,
+        instruments: [{ ...instrument, paused: true, pauseInfo: { until: "next tuesday" } }],
+      }),
     ).toThrow();
+  });
+
+  test("rejects pauseInfo on an unpaused instrument", () => {
+    expect(() =>
+      parseConfig({
+        ...config,
+        instruments: [{ ...instrument, pauseInfo: { reason: "stale pause entry" } }],
+      }),
+    ).toThrow(/paused/i);
   });
 });
 

@@ -4,9 +4,9 @@
 // config-backed source below for a ledger-backed one -- reading the ACS over
 // the JSON Ledger API to fill in `totalSupply` -- without touching routing.
 import { DEFAULT_INSTRUMENT_SUPPORTED_APIS, type InstrumentConfig, type RegistryConfig } from "./config.ts";
-import type { components } from "./generated/token-metadata-v1.d.ts";
+import type { Instrument } from "./types.ts";
 
-export type Instrument = components["schemas"]["Instrument"];
+export type { Instrument };
 
 export interface InstrumentSource {
   /** Every instrument this registry administers, ordered by id. */
@@ -26,11 +26,11 @@ function toInstrument(config: InstrumentConfig): Instrument {
     // never has to infer it. Advisory: not enforced on-ledger.
     paused: config.paused,
     ...(config.pauseInfo === undefined ? {} : { pauseInfo: config.pauseInfo }),
-    // CIP-0056 v1 holdings have no provider/accountId -- those arrive with
-    // Token Standard v2 (CIP-0112) -- so there is no account input to show.
-    showAccountInputFields: false,
-    // `totalSupply`/`totalSupplyAsOf` are omitted: a config file cannot know
-    // the live supply. A ledger-backed source is the place to fill them in.
+    // Omitted: `totalSupply`/`totalSupplyAsOf` (a config file cannot know the
+    // live supply; a ledger-backed source fills them in), and the deprecated
+    // `showAccountInputFields` with its replacement `accountInputFieldsToShow`
+    // (CIP-0056 v1 holdings have no provider/accountId; both default to
+    // "show nothing").
   };
 }
 

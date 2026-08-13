@@ -4,12 +4,8 @@
 // GET paths on public read-only data need no router, and no CORS middleware --
 // a constant wildcard is the whole policy.
 import type { RegistryConfig } from "./config.ts";
-import type { components } from "./generated/token-metadata-v1.d.ts";
 import type { InstrumentSource } from "./instruments.ts";
-
-type GetRegistryInfoResponse = components["schemas"]["GetRegistryInfoResponse"];
-type ListInstrumentsResponse = components["schemas"]["ListInstrumentsResponse"];
-type ErrorResponse = components["schemas"]["ErrorResponse"];
+import type { ErrorResponse, GetRegistryInfoResponse, ListInstrumentsResponse } from "./types.ts";
 
 const PREFIX = "/registry/metadata/v1";
 const INSTRUMENTS_PATH = `${PREFIX}/instruments`;
@@ -20,7 +16,7 @@ export const DEFAULT_PAGE_SIZE = 25;
 /** Bound on `pageSize`, so one request cannot ask for an unbounded response. */
 export const MAX_PAGE_SIZE = 100;
 
-const READ_METHODS = ["GET", "HEAD", "OPTIONS"] as const;
+const READ_METHODS = ["GET", "OPTIONS"] as const;
 
 // Public, read-only, unauthenticated data consumed by browser wallets on other
 // origins. Because no credentials are involved there is nothing to gate, and a
@@ -169,26 +165,20 @@ export function createHandler(options: HandlerOptions): Handler {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
-    if (request.method !== "GET" && request.method !== "HEAD") {
+    if (request.method !== "GET") {
       return fail(405, `method ${request.method} not allowed`, {
         ...NO_STORE_HEADERS,
         allow: READ_METHODS.join(", "),
       });
     }
 
-    let response: Response;
     try {
-      response = await route(options, request);
+      return await route(options, request);
     } catch (cause) {
       // A ledger-backed InstrumentSource can fail at request time; the caller
       // gets the spec's error shape rather than a stack trace.
       console.error("token-metadata-v1: request failed", cause);
-      response = fail(500, "internal error");
+      return fail(500, "internal error");
     }
-
-    if (request.method === "HEAD") {
-      return new Response(null, { status: response.status, headers: response.headers });
-    }
-    return response;
   };
 }

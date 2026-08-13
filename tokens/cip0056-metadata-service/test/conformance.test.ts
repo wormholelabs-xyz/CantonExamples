@@ -10,9 +10,9 @@ import Ajv from "ajv";
 import addFormats from "ajv-formats";
 import { parse as parseYaml } from "yaml";
 
-import { parseConfig } from "./config.ts";
-import { createHandler } from "./handler.ts";
-import { configInstrumentSource } from "./instruments.ts";
+import { parseConfig } from "../src/config.ts";
+import { createHandler } from "../src/handler.ts";
+import { configInstrumentSource } from "../src/instruments.ts";
 import { readJson } from "./testing.ts";
 
 const SPEC_URL = new URL("../openapi/token-metadata-v1.yaml", import.meta.url);

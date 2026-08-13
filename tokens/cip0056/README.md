@@ -74,8 +74,8 @@ every transfer while wallets ignore it anyway. Until an admin serves the
 metadata API, a conforming wallet displays the raw `InstrumentId.id` text.
 
 `tokens/cip0056-metadata-service` is a reference implementation of that API for
-this example, including the deployment obligations (discovery registration) and
-the limits of what metadata can express -- notably that the API has no icon
+this example. It documents the deployment obligations (discovery registration)
+and the limits of what metadata can express -- notably that the API has no icon
 field, and that its `paused` flag is advisory because these templates do not
 enforce a pause on-ledger.
 

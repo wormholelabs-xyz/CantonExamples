@@ -12,7 +12,9 @@ const DEFAULT_PORT = 8080;
 
 function configPathFromArgv(argv: string[]): string | undefined {
   const flag = argv.indexOf("--config");
-  if (flag >= 0) return argv[flag + 1];
+  // A trailing `--config` yields "" to force the usage error below, rather
+  // than silently falling back to METADATA_CONFIG.
+  if (flag >= 0) return argv[flag + 1] ?? "";
   return argv.find((arg) => arg.startsWith("--config="))?.slice("--config=".length);
 }
 
