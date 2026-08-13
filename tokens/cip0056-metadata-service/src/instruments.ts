@@ -1,8 +1,5 @@
-// Where instrument metadata comes from.
-//
-// The handler talks to this interface only, so a deployment can swap the
-// config-backed source below for a ledger-backed one -- reading the ACS over
-// the JSON Ledger API to fill in `totalSupply` -- without touching routing.
+// Instrument metadata source. The handler talks to this interface only, so
+// the config-backed source can be swapped for a ledger-backed one.
 import { DEFAULT_INSTRUMENT_SUPPORTED_APIS, type InstrumentConfig, type RegistryConfig } from "./config.ts";
 import type { Instrument } from "./types.ts";
 
@@ -22,23 +19,16 @@ function toInstrument(config: InstrumentConfig): Instrument {
     symbol: config.symbol,
     decimals: config.decimals,
     supportedApis: config.supportedApis ?? DEFAULT_INSTRUMENT_SUPPORTED_APIS,
-    // Stated explicitly rather than left to the schema default, so a wallet
-    // never has to infer it. Advisory: not enforced on-ledger.
+    // Advisory, but not enforced on-ledger.
     paused: config.paused,
     ...(config.pauseInfo === undefined ? {} : { pauseInfo: config.pauseInfo }),
-    // Omitted: `totalSupply`/`totalSupplyAsOf` (a config file cannot know the
-    // live supply; a ledger-backed source fills them in), and the deprecated
-    // `showAccountInputFields` with its replacement `accountInputFieldsToShow`
-    // (CIP-0056 v1 holdings have no provider/accountId; both default to
-    // "show nothing").
+    // Omitted: `totalSupply`/`totalSupplyAsOf`.
   };
 }
 
 /**
- * Serve the instruments declared in a deployment's config file, in id order.
- *
- * Ordering is by code point and is fixed at construction: pagination hands out
- * an id as its page token, so the sequence must not shift between requests.
+ * Serve the config file's instruments in id order. Order is fixed at
+ * construction: page tokens are ids, so the sequence must not shift.
  */
 export function configInstrumentSource(config: RegistryConfig): InstrumentSource {
   const instruments: readonly Instrument[] = Object.freeze(

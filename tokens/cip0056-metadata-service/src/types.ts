@@ -1,11 +1,7 @@
-// Hand-written mirrors of the component schemas in
-// openapi/token-metadata-v1.yaml. Kept honest by src/conformance.test.ts,
-// which validates live responses against the vendored document itself, so
-// drift from the spec fails a test rather than hiding in these types.
-//
-// The spec's deprecated `showAccountInputFields` and its replacement
-// `accountInputFieldsToShow` are omitted: CIP-0056 v1 holdings have no
-// provider/accountId, and both fields default to "show nothing".
+// Hand-written mirrors of the openapi/token-metadata-v1.yaml component
+// schemas; test/conformance.test.ts guards against drift. The deprecated
+// `showAccountInputFields` and `accountInputFieldsToShow` are omitted:
+// CIP-0056 v1 holdings have no provider/accountId.
 
 /** Map from token standard API name to supported minor version. */
 export type SupportedApis = {
