@@ -55,6 +55,30 @@ value. `tokens/cip0056-test`'s `TestCoinAuthenticity` suite proves this with
 a `ForgedHolding` template that implements `Holding` with attacker-chosen
 fields and confirms every debit path rejects it.
 
+## Instrument metadata lives off-ledger
+
+Nothing in these templates carries an instrument's name, symbol, or decimals,
+and that is what the standard prescribes. The vendored
+`splice-api-token-metadata-v1` package supplies the machine-readable `Metadata`
+map and the `ExtraArgs`/`ChoiceContext` plumbing that choices pass around; it
+declares no instrument-metadata interface for a template to implement.
+Wallets read display metadata from an HTTP API served by the
+instrument admin (`GET /registry/metadata/v1/instruments/{instrumentId}`),
+resolved from the admin party through scan or the app directory.
+
+Consequently every `Holding` and factory view here sets `meta =
+emptyMetadata`. That is deliberate, not an omission: `MetadataV1` itself
+advises implementors to keep metadata small because on-ledger data is costly,
+and duplicating a name into every holding contract would pay that cost on
+every transfer while wallets ignore it anyway. Until an admin serves the
+metadata API, a conforming wallet displays the raw `InstrumentId.id` text.
+
+`tokens/cip0056-metadata-service` is a reference implementation of that API for
+this example. It documents the deployment obligations (discovery registration)
+and the limits of what metadata can express -- notably that the API has no icon
+field, and that its `paused` flag is advisory because these templates do not
+enforce a pause on-ledger.
+
 ## Production/test package split
 
 `tokens/cip0056` is templates only -- no `daml-script` -- so it can be

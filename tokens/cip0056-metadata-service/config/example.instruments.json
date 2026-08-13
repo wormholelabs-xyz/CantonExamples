@@ -1,0 +1,26 @@
+{
+  "adminId": "gg::12203c9b7f1e4a5d6c8b2f0e1d4a7c9b3e6f8a1d2c5b4e7f0a9c8b6d3e2f1a4b7c9d",
+  "supportedApis": {
+    "splice-api-token-metadata-v1": 1
+  },
+  "instruments": [
+    {
+      "id": "solana:85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ",
+      "name": "Wormhole",
+      "symbol": "W",
+      "decimals": 6
+    },
+    {
+      "id": "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "name": "USD Coin",
+      "symbol": "USDC",
+      "decimals": 6
+    },
+    {
+      "id": "solana:SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb",
+      "name": "SpaceX",
+      "symbol": "SPCX",
+      "decimals": 6
+    }
+  ]
+}

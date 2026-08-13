@@ -6,3 +6,6 @@
 
 # Task-planning notes for AI coding agents; never part of the committed docs.
 .claude/
+
+# bun.lock IS committed -- every install must resolve to the audited tree.
+node_modules/

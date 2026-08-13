@@ -1,0 +1,25 @@
+{
+  "name": "cip0056-metadata-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference implementation of the splice-api-token-metadata-v1 registry API for the CIP-0056 example token.",
+  "engines": {
+    "bun": ">=1.3.13"
+  },
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "typescript": "5.9.3",
+    "yaml": "2.9.0"
+  }
+}
