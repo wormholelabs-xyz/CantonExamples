@@ -1,4 +1,4 @@
-FROM node:24
+FROM node:26.13.0@sha256:438603bbb5cda404b9416f0b5c8026f61501ab911760d861ec28c36b5d675725
 
 ARG TZ
 ENV TZ="$TZ"
@@ -104,7 +104,7 @@ RUN chmod +x /usr/local/bin/init-firewall.sh && \
 USER node
 
 # Install Bun
-RUN curl -fsSL https://bun.com/install | bash -s "bun-v1.3.14"
+RUN curl -fsSL https://bun.com/install | bash -s "bun-v1.4.4"
 
 # Install dpm (Digital Asset's Daml package manager) and pin the SDK version
 # every daml.yaml in this repo declares. Same installer used by the source
